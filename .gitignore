@@ -12,3 +12,5 @@ venv/
 
 # OS / editor
 .DS_Store
+
+*.mpp

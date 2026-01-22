@@ -60,7 +60,26 @@ class MPPReader:
             self.read()
 
         props = self.project.getProjectProperties()
+        
+        project_id = None
+        try:
+            if hasattr(self.project, "getID"):
+                project_id = self.project.getID()
+            elif hasattr(self.project, "getUniqueID"):
+                project_id = self.project.getUniqueID()
+            
+            if project_id is None:
+                if hasattr(props, "getUniqueID"):
+                    project_id = props.getUniqueID()
+                elif hasattr(props, "getID"):
+                    project_id = props.getID()
+                elif hasattr(props, "getProjectID"):
+                    project_id = props.getProjectID()
+        except Exception:
+            pass
+        
         return {
+            "id": str(project_id) if project_id is not None else None,
             "name": str(props.getProjectTitle()) if props.getProjectTitle() else None,
             "start_date": self._convert_date(props.getStartDate()),
             "finish_date": self._convert_date(props.getFinishDate()),

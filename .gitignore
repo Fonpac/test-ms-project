@@ -13,4 +13,8 @@ venv/
 # OS / editor
 .DS_Store
 
+# Project files
 *.mpp
+
+# Import reports
+import_reports/

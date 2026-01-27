@@ -14,12 +14,16 @@ Obs: se `python-dotenv` estiver instalado, ele carrega automaticamente o `.env`.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
 # Quando executado como arquivo (python scripts/xxx.py), o Python não inclui a raiz do repo no sys.path.
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
+
+# Diretório para salvar relatórios de importação
+REPORTS_DIR = REPO_ROOT / "import_reports"
 
 try:
     from dotenv import load_dotenv
@@ -28,7 +32,7 @@ except ImportError:  # pragma: no cover
         return False
 
 from mpxj_pm.db import DBConfig
-from mpxj_pm.importer import MPPImporter
+from mpxj_pm.importer import MPPImporter, ImportReport
 
 
 def find_mpp_files(repo_root: Path) -> list[Path]:
@@ -47,7 +51,7 @@ def main() -> int:
         # Em alguns ambientes (ex: sandbox/CI) arquivos .env podem ser bloqueados.
         pass
 
-    created_by = int(__import__("os").getenv("CREATED_BY", "1"))
+    created_by = int(os.getenv("CREATED_BY", "1"))
     importer = MPPImporter(DBConfig(), created_by=created_by)
 
     if len(sys.argv) >= 2:
@@ -65,36 +69,55 @@ def main() -> int:
         for mpp_file in mpp_files:
             print(f"  - {mpp_file}")
 
+    print(f"\nRelatórios serão salvos em: {REPORTS_DIR}")
     print("\nIniciando importação...\n")
     
-    results = []
+    reports: list[ImportReport] = []
     for i, mpp_file in enumerate(mpp_files, 1):
         print(f"[{i}/{len(mpp_files)}] Importando: {mpp_file.name}")
         try:
-            result = importer.import_project(str(mpp_file))
-            results.append((mpp_file.name, result, None))
-            print(f"  ✓ Concluído: project_id={result.get('project_id')}, import_batch_id={result.get('import_batch_id')}")
+            report = importer.import_project(
+                str(mpp_file),
+                report_dir=str(REPORTS_DIR),
+            )
+            reports.append(report)
         except Exception as e:
-            results.append((mpp_file.name, None, str(e)))
-            print(f"  ✗ Erro: {e}")
+            print(f"  Erro fatal: {e}")
+            # Cria um report de erro
+            error_report = ImportReport(
+                source_file=mpp_file.name,
+                success=False,
+                error_message=str(e),
+            )
+            reports.append(error_report)
         print()
 
-    print("\n" + "="*60)
-    print("Resumo da importação:")
-    print("="*60)
-    for name, result, error in results:
-        if error:
-            print(f"✗ {name}: ERRO - {error}")
+    # Resumo final
+    print("\n" + "=" * 70)
+    print("RESUMO DA IMPORTAÇÃO")
+    print("=" * 70)
+    
+    success_count = 0
+    for report in reports:
+        status = "OK" if report.success else "ERRO"
+        time_str = f"{report.total_time_seconds():.2f}s" if report.timings_ms else "N/A"
+        
+        if report.success:
+            print(f"[{status}] {report.source_file}")
+            print(f"       Projeto: {report.project_name} (ID: {report.project_id})")
+            print(f"       Ação: {report.project_action} | Tempo: {time_str}")
+            print(f"       Custom Fields: {report.custom_field_definitions}")
+            success_count += 1
         else:
-            print(f"✓ {name}: project_id={result.get('project_id')}, import_batch_id={result.get('import_batch_id')}")
+            print(f"[{status}] {report.source_file}")
+            print(f"       Erro: {report.error_message}")
+    
+    print("=" * 70)
+    print(f"Total: {len(reports)} | Sucesso: {success_count} | Falha: {len(reports) - success_count}")
+    print(f"Relatórios detalhados em: {REPORTS_DIR}")
+    print("=" * 70)
 
-    failed = sum(1 for _, _, error in results if error)
-    if failed > 0:
-        print(f"\n⚠ {failed} arquivo(s) falharam na importação.")
-        return 1
-
-    print(f"\n✓ Todos os {len(results)} arquivo(s) foram importados com sucesso!")
-    return 0
+    return 0 if success_count == len(reports) else 1
 
 
 if __name__ == "__main__":

@@ -5,7 +5,43 @@ from __future__ import annotations
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
+
+# Cache global para classes Java (evita lookup repetido)
+_java_classes: Dict[str, Any] = {}
+
+
+def _find_jvm_path() -> Optional[str]:
+    """Encontra o caminho do jvm.dll/libjvm.so."""
+    import os
+    import sys
+    
+    java_home = os.environ.get("JAVA_HOME")
+    if not java_home:
+        return None
+    
+    # Possíveis localizações do jvm.dll/libjvm.so
+    if sys.platform == "win32":
+        candidates = [
+            os.path.join(java_home, "bin", "server", "jvm.dll"),
+            os.path.join(java_home, "bin", "client", "jvm.dll"),
+            os.path.join(java_home, "jre", "bin", "server", "jvm.dll"),
+            os.path.join(java_home, "jre", "bin", "client", "jvm.dll"),
+        ]
+    else:
+        candidates = [
+            os.path.join(java_home, "lib", "server", "libjvm.so"),
+            os.path.join(java_home, "lib", "libjvm.so"),
+            os.path.join(java_home, "jre", "lib", "server", "libjvm.so"),
+            os.path.join(java_home, "lib", "amd64", "server", "libjvm.so"),
+        ]
+    
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    
+    return None
 
 
 def _init_mpxj():
@@ -13,6 +49,7 @@ def _init_mpxj():
         import glob
         import os
 
+        import jpype
         import mpxj
 
         if not mpxj.isJVMStarted():
@@ -23,7 +60,15 @@ def _init_mpxj():
                     mpxj.addClassPath(jar)
                 except Exception:
                     pass
-            mpxj.startJVM()
+            
+            # Tenta encontrar o JVM explicitamente se o automático falhar
+            jvm_path = _find_jvm_path()
+            if jvm_path:
+                print(f"Using JVM: {jvm_path}")
+                jpype.startJVM(jvm_path, classpath=jar_files)
+            else:
+                # Fallback para detecção automática
+                mpxj.startJVM()
 
         from jpype.types import JClass
 
@@ -39,6 +84,23 @@ def _init_mpxj():
 
 
 UniversalProjectReader = _init_mpxj()
+
+
+def _get_java_class(class_name: str) -> Any:
+    """Obtém classe Java com cache."""
+    global _java_classes
+    if class_name not in _java_classes:
+        from jpype.types import JClass
+        try:
+            _java_classes[class_name] = JClass(f"org.mpxj.{class_name}")
+        except TypeError:
+            _java_classes[class_name] = JClass(f"net.sf.mpxj.{class_name}")
+    return _java_classes[class_name]
+
+
+def _get_field_type_class() -> Any:
+    """Retorna enum FieldTypeClass do MPXJ."""
+    return _get_java_class("FieldTypeClass")
 
 
 class MPPReader:
@@ -94,7 +156,13 @@ class MPPReader:
             ),
         }
 
-    def get_tasks(self) -> List[Dict[str, Any]]:
+    def get_tasks(self, task_custom_fields: Optional[List[Any]] = None) -> List[Dict[str, Any]]:
+        """Retorna lista de tasks do projeto.
+        
+        Args:
+            task_custom_fields: Lista opcional de CustomField objects para extrair valores.
+                                Obtida via get_custom_field_definitions()[1]["TASK"]
+        """
         if not self.project:
             self.read()
 
@@ -103,27 +171,42 @@ class MPPReader:
             if task is None:
                 continue
 
-            tasks.append(
-                {
-                    "id": str(task.getID()) if task.getID() else None,
-                    "name": str(task.getName()) if task.getName() else None,
-                    "start": self._convert_date(task.getStart()),
-                    "finish": self._convert_date(task.getFinish()),
-                    "duration": self._convert_duration(task.getDuration()),
-                    "work": self._convert_duration(task.getWork()),
-                    "percent_complete": int(task.getPercentageComplete()) if task.getPercentageComplete() else 0,
-                    "priority": self._convert_priority(task.getPriority()),
-                    "notes": str(task.getNotes()) if task.getNotes() else None,
-                    "wbs": str(task.getWBS()) if task.getWBS() else None,
-                    "outline_level": int(task.getOutlineLevel()) if task.getOutlineLevel() else 0,
-                    "milestone": bool(task.getMilestone()) if task.getMilestone() else False,
-                    "summary": bool(task.getSummary()) if task.getSummary() else False,
-                }
-            )
+            # UniqueID é estável entre versões do arquivo; ID pode mudar com reordenação
+            unique_id = task.getUniqueID()
+            
+            task_data = {
+                "external_id": str(unique_id) if unique_id else None,
+                "id": str(task.getID()) if task.getID() else None,
+                "name": str(task.getName()) if task.getName() else None,
+                "start": self._convert_date(task.getStart()),
+                "finish": self._convert_date(task.getFinish()),
+                "duration": self._convert_duration(task.getDuration()),
+                "work": self._convert_duration(task.getWork()),
+                "percent_complete": int(task.getPercentageComplete()) if task.getPercentageComplete() else 0,
+                "priority": self._convert_priority(task.getPriority()),
+                "notes": str(task.getNotes()) if task.getNotes() else None,
+                "wbs": str(task.getWBS()) if task.getWBS() else None,
+                "outline_level": int(task.getOutlineLevel()) if task.getOutlineLevel() else 0,
+                "milestone": bool(task.getMilestone()) if task.getMilestone() else False,
+                "summary": bool(task.getSummary()) if task.getSummary() else False,
+                "custom_fields": {},
+            }
+
+            # Extrai custom fields se fornecidos
+            if task_custom_fields:
+                task_data["custom_fields"] = self._extract_custom_field_values(task, task_custom_fields)
+
+            tasks.append(task_data)
 
         return tasks
 
-    def get_resources(self) -> List[Dict[str, Any]]:
+    def get_resources(self, resource_custom_fields: Optional[List[Any]] = None) -> List[Dict[str, Any]]:
+        """Retorna lista de resources do projeto.
+        
+        Args:
+            resource_custom_fields: Lista opcional de CustomField objects para extrair valores.
+                                    Obtida via get_custom_field_definitions()[1]["RESOURCE"]
+        """
         if not self.project:
             self.read()
 
@@ -132,23 +215,38 @@ class MPPReader:
             if resource is None:
                 continue
 
-            resources.append(
-                {
-                    "id": str(resource.getID()) if resource.getID() else None,
-                    "name": str(resource.getName()) if resource.getName() else None,
-                    "email": str(resource.getEmailAddress()) if resource.getEmailAddress() else None,
-                    "type": str(resource.getType()) if resource.getType() else None,
-                    "group": str(resource.getGroup()) if resource.getGroup() else None,
-                    "max_units": float(resource.getMaxUnits()) if resource.getMaxUnits() else None,
-                    "standard_rate": self._convert_rate(resource.getStandardRate()),
-                    "cost": self._convert_rate(resource.getCost()),
-                    "notes": str(resource.getNotes()) if resource.getNotes() else None,
-                }
-            )
+            # UniqueID é estável entre versões do arquivo
+            unique_id = resource.getUniqueID()
+            
+            resource_data = {
+                "external_id": str(unique_id) if unique_id else None,
+                "id": str(resource.getID()) if resource.getID() else None,
+                "name": str(resource.getName()) if resource.getName() else None,
+                "email": str(resource.getEmailAddress()) if resource.getEmailAddress() else None,
+                "type": str(resource.getType()) if resource.getType() else None,
+                "group": str(resource.getGroup()) if resource.getGroup() else None,
+                "max_units": float(resource.getMaxUnits()) if resource.getMaxUnits() else None,
+                "standard_rate": self._convert_rate(resource.getStandardRate()),
+                "cost": self._convert_rate(resource.getCost()),
+                "notes": str(resource.getNotes()) if resource.getNotes() else None,
+                "custom_fields": {},
+            }
+
+            # Extrai custom fields se fornecidos
+            if resource_custom_fields:
+                resource_data["custom_fields"] = self._extract_custom_field_values(resource, resource_custom_fields)
+
+            resources.append(resource_data)
 
         return resources
 
-    def get_assignments(self) -> List[Dict[str, Any]]:
+    def get_assignments(self, assignment_custom_fields: Optional[List[Any]] = None) -> List[Dict[str, Any]]:
+        """Retorna lista de resource assignments do projeto.
+        
+        Args:
+            assignment_custom_fields: Lista opcional de CustomField objects para extrair valores.
+                                      Obtida via get_custom_field_definitions()[1]["ASSIGNMENT"]
+        """
         if not self.project:
             self.read()
 
@@ -160,26 +258,38 @@ class MPPReader:
             task = assignment.getTask()
             resource = assignment.getResource()
 
-            assignments.append(
-                {
-                    "task_id": str(task.getID()) if task and task.getID() else None,
-                    "task_name": str(task.getName()) if task and task.getName() else None,
-                    "resource_id": str(resource.getID()) if resource and resource.getID() else None,
-                    "resource_name": str(resource.getName()) if resource and resource.getName() else None,
-                    "work": self._convert_duration(assignment.getWork()),
-                    "cost": self._convert_rate(assignment.getCost()),
-                    "start": self._convert_date(assignment.getStart()),
-                    "finish": self._convert_date(assignment.getFinish()),
-                    "units": float(assignment.getUnits()) if assignment.getUnits() else None,
-                    "percent_complete": int(assignment.getPercentageWorkComplete())
-                    if hasattr(assignment, "getPercentageWorkComplete") and assignment.getPercentageWorkComplete()
-                    else (
-                        int(assignment.getPercentageComplete())
-                        if hasattr(assignment, "getPercentageComplete") and assignment.getPercentageComplete()
-                        else 0
-                    ),
-                }
-            )
+            # UniqueID do assignment é estável entre versões
+            unique_id = assignment.getUniqueID() if hasattr(assignment, "getUniqueID") else None
+
+            assignment_data = {
+                "external_id": str(unique_id) if unique_id else None,
+                # Referências por UniqueID (external_id) das entidades relacionadas
+                "task_external_id": str(task.getUniqueID()) if task and task.getUniqueID() else None,
+                "task_id": str(task.getID()) if task and task.getID() else None,
+                "task_name": str(task.getName()) if task and task.getName() else None,
+                "resource_external_id": str(resource.getUniqueID()) if resource and resource.getUniqueID() else None,
+                "resource_id": str(resource.getID()) if resource and resource.getID() else None,
+                "resource_name": str(resource.getName()) if resource and resource.getName() else None,
+                "work": self._convert_duration(assignment.getWork()),
+                "cost": self._convert_rate(assignment.getCost()),
+                "start": self._convert_date(assignment.getStart()),
+                "finish": self._convert_date(assignment.getFinish()),
+                "units": float(assignment.getUnits()) if assignment.getUnits() else None,
+                "percent_complete": int(assignment.getPercentageWorkComplete())
+                if hasattr(assignment, "getPercentageWorkComplete") and assignment.getPercentageWorkComplete()
+                else (
+                    int(assignment.getPercentageComplete())
+                    if hasattr(assignment, "getPercentageComplete") and assignment.getPercentageComplete()
+                    else 0
+                ),
+                "custom_fields": {},
+            }
+
+            # Extrai custom fields se fornecidos
+            if assignment_custom_fields:
+                assignment_data["custom_fields"] = self._extract_custom_field_values(assignment, assignment_custom_fields)
+
+            assignments.append(assignment_data)
 
         return assignments
 
@@ -207,8 +317,11 @@ class MPPReader:
 
                 dependencies.append(
                     {
+                        # Referências por UniqueID (external_id) - estáveis entre versões
+                        "predecessor_external_id": str(target_task.getUniqueID()) if target_task and target_task.getUniqueID() else None,
                         "predecessor_id": str(target_task.getID()) if target_task and target_task.getID() else None,
                         "predecessor_name": str(target_task.getName()) if target_task and target_task.getName() else None,
+                        "successor_external_id": str(task.getUniqueID()) if task.getUniqueID() else None,
                         "successor_id": str(task.getID()) if task.getID() else None,
                         "successor_name": str(task.getName()) if task.getName() else None,
                         "type": str(predecessor.getType()) if hasattr(predecessor, "getType") and predecessor.getType() else None,
@@ -228,31 +341,154 @@ class MPPReader:
                 continue
 
             parent = calendar.getParent() if hasattr(calendar, "getParent") else None
-            calendar_id = None
-            if hasattr(calendar, "getID"):
-                calendar_id = calendar.getID()
-            elif hasattr(calendar, "getUniqueID"):
-                calendar_id = calendar.getUniqueID()
+            
+            # UniqueID é estável entre versões do arquivo
+            unique_id = None
+            if hasattr(calendar, "getUniqueID"):
+                unique_id = calendar.getUniqueID()
 
-            parent_id = None
+            parent_external_id = None
             if parent is not None:
-                if hasattr(parent, "getID"):
-                    parent_id = parent.getID()
-                elif hasattr(parent, "getUniqueID"):
-                    parent_id = parent.getUniqueID()
+                if hasattr(parent, "getUniqueID"):
+                    parent_external_id = parent.getUniqueID()
 
             calendars.append(
                 {
-                    "id": str(calendar_id) if calendar_id else None,
+                    "external_id": str(unique_id) if unique_id else None,
                     "name": str(calendar.getName()) if hasattr(calendar, "getName") and calendar.getName() else None,
-                    "parent": str(parent.getName())
+                    "parent_external_id": str(parent_external_id) if parent_external_id else None,
+                    "parent_name": str(parent.getName())
                     if parent and hasattr(parent, "getName") and parent.getName()
                     else None,
-                    "parent_id": str(parent_id) if parent_id else None,
                 }
             )
 
         return calendars
+
+    def get_custom_field_definitions(self) -> Tuple[List[Dict[str, Any]], Dict[str, List[Any]]]:
+        """Retorna definições de campos customizados e cache por classe.
+        
+        Returns:
+            Tuple com:
+            - Lista de definições (field_type, field_class, alias, data_type)
+            - Dict mapeando field_class -> lista de CustomField objects (para uso em get_tasks, etc.)
+        """
+        if not self.project:
+            self.read()
+
+        FieldTypeClass = _get_field_type_class()
+
+        definitions: List[Dict[str, Any]] = []
+        fields_by_class: Dict[str, List[Any]] = {
+            "TASK": [],
+            "RESOURCE": [],
+            "ASSIGNMENT": [],
+            "PROJECT": [],
+        }
+
+        for field in self.project.getCustomFields():
+            if field is None:
+                continue
+
+            field_type = field.getFieldType()
+            if field_type is None:
+                continue
+
+            field_class_enum = field_type.getFieldTypeClass()
+            field_class = str(field_class_enum) if field_class_enum else "UNKNOWN"
+            
+            # Extrai data type
+            data_type = "STRING"
+            if hasattr(field_type, "getDataType") and field_type.getDataType():
+                data_type = str(field_type.getDataType())
+
+            alias = str(field.getAlias()) if field.getAlias() else None
+
+            definitions.append({
+                "field_type": str(field_type),
+                "field_class": field_class,
+                "alias": alias,
+                "data_type": data_type,
+            })
+
+            # Agrupa por classe para uso posterior
+            if field_class in fields_by_class:
+                fields_by_class[field_class].append(field)
+
+        return definitions, fields_by_class
+
+    def _extract_custom_field_values(self, entity, custom_fields: List[Any]) -> Dict[str, Any]:
+        """Extrai valores de campos customizados de uma entidade (task, resource, assignment)."""
+        result: Dict[str, Any] = {}
+
+        for field in custom_fields:
+            field_type = field.getFieldType()
+            if field_type is None:
+                continue
+
+            try:
+                value = entity.getCachedValue(field_type)
+                if value is None:
+                    continue
+
+                # Usa alias como key se disponível, senão usa o nome do field
+                key = str(field.getAlias()) if field.getAlias() else str(field_type)
+                
+                # Converte valor baseado no tipo
+                converted = self._convert_custom_value(value, field_type)
+                if converted is not None:
+                    result[key] = converted
+
+            except Exception:
+                continue
+
+        return result
+
+    def _convert_custom_value(self, value, field_type) -> Any:
+        """Converte valor de custom field para tipo Python serializável."""
+        if value is None:
+            return None
+
+        try:
+            # Tenta identificar o tipo pelo data type do field
+            data_type = None
+            if hasattr(field_type, "getDataType") and field_type.getDataType():
+                data_type = str(field_type.getDataType()).upper()
+
+            # Conversão baseada no data type
+            if data_type in ("DATE", "DATE_TIME"):
+                return self._convert_date(value)
+            elif data_type == "DURATION":
+                return self._convert_duration(value)
+            elif data_type in ("CURRENCY", "NUMERIC", "RATE"):
+                return self._convert_rate(value)
+            elif data_type == "BOOLEAN":
+                return bool(value)
+            elif data_type in ("INTEGER", "SHORT"):
+                return int(value) if value else None
+
+            # Fallback: tenta conversões baseadas no tipo Java do valor
+            if hasattr(value, "getTime"):
+                return self._convert_date(value)
+            if hasattr(value, "getDuration"):
+                return self._convert_duration(value)
+            if hasattr(value, "getAmount"):
+                return self._convert_rate(value)
+            if hasattr(value, "booleanValue"):
+                return bool(value.booleanValue())
+            if hasattr(value, "intValue"):
+                return int(value.intValue())
+            if hasattr(value, "doubleValue"):
+                return float(value.doubleValue())
+
+            # Default: converte para string
+            return str(value) if value else None
+
+        except Exception:
+            try:
+                return str(value)
+            except Exception:
+                return None
 
     def _convert_date(self, date_obj) -> Optional[str]:
         if date_obj is None:
@@ -300,15 +536,29 @@ class MPPReader:
             return None
 
 
-def read_mpp(mpp_path: str) -> Dict[str, Any]:
-    """Convenience: retorna todos os blocos necessários para importação."""
+def read_mpp(mpp_path: str, include_custom_fields: bool = True) -> Dict[str, Any]:
+    """Convenience: retorna todos os blocos necessários para importação.
+    
+    Args:
+        mpp_path: Caminho do arquivo .mpp
+        include_custom_fields: Se True, extrai definições e valores de custom fields
+    """
     r = MPPReader(mpp_path)
     r.read()
+
+    # Extrai custom fields se solicitado
+    custom_field_definitions = []
+    fields_by_class: Dict[str, List[Any]] = {}
+    
+    if include_custom_fields:
+        custom_field_definitions, fields_by_class = r.get_custom_field_definitions()
+
     return {
         "project": r.get_project_info(),
-        "tasks": r.get_tasks(),
-        "resources": r.get_resources(),
-        "assignments": r.get_assignments(),
+        "tasks": r.get_tasks(fields_by_class.get("TASK")),
+        "resources": r.get_resources(fields_by_class.get("RESOURCE")),
+        "assignments": r.get_assignments(fields_by_class.get("ASSIGNMENT")),
         "dependencies": r.get_dependencies(),
         "calendars": r.get_calendars(),
+        "custom_field_definitions": custom_field_definitions,
     }

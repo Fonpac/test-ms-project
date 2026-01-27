@@ -390,9 +390,18 @@ class MPPImporter:
                         
                         report.project_id = project_id
 
-                        # Fase 5: Extração de custom fields
+                        # Inicializa contadores de baseline e timephased
+                        baseline_count = 0
+                        task_baseline_count = 0
+                        resource_baseline_count = 0
+                        timephased_planned_rows = 0
+                        timephased_complete_rows = 0
+                        timephased_assignments_with_data = 0
+                        timephased_negative_values_count = 0
+
+                        # Fase 5: Extração de custom fields (cache para reuso)
                         with Timer("extract_custom_fields", timings):
-                            custom_field_definitions, _ = reader.get_custom_field_definitions()
+                            custom_field_definitions, fields_by_class = reader.get_custom_field_definitions()
                         
                         # Fase 6: Import custom field definitions
                         with Timer("import_custom_field_definitions", timings):
@@ -412,39 +421,94 @@ class MPPImporter:
                             )
                         report.calendars = calendar_count
 
-                        # Fase 9: Extração de resources
+                        # Fase 9: Descobre baselines (antes de extrair tasks/resources para usar nos bundles)
+                        with Timer("discover_baselines", timings):
+                            baselines_meta = reader.get_baseline_indices_and_names()
+                            baseline_indices = [b["index"] for b in baselines_meta] if baselines_meta else []
+
+                        # Fase 10: Extração otimizada de resources + resource baselines (single pass)
                         with Timer("extract_resources", timings):
-                            _, fields_by_class = reader.get_custom_field_definitions()
-                            resources_data = reader.get_resources(
-                                resource_custom_fields=fields_by_class.get("RESOURCE", [])
+                            resources_data, resource_baselines_data = reader.extract_resources_bundle(
+                                resource_custom_fields=fields_by_class.get("RESOURCE", []),
+                                baseline_indices=baseline_indices if baseline_indices else None,
                             )
                         
-                        # Fase 10: Import resources
+                        # Fase 11: Import resources
                         with Timer("import_resources", timings):
                             resource_count, resource_id_map = self._import_resources(
                                 cur, project_id, resources_data
                             )
                         report.resources = resource_count
 
-                        # Fase 11: Extração de tasks
+                        # Fase 12: Extração otimizada de tasks + dependencies + task baselines (single pass)
                         with Timer("extract_tasks", timings):
-                            tasks_data = reader.get_tasks(
-                                task_custom_fields=fields_by_class.get("TASK", [])
+                            tasks_data, dependencies_data, task_baselines_data = reader.extract_tasks_bundle(
+                                task_custom_fields=fields_by_class.get("TASK", []),
+                                baseline_indices=baseline_indices if baseline_indices else None,
                             )
                         
-                        # Fase 12: Import tasks
+                        # Fase 13: Import tasks
                         with Timer("import_tasks", timings):
                             task_count, task_id_map = self._import_tasks(
                                 cur, project_id, tasks_data
                             )
                         report.tasks = task_count
 
+                        # Fase 14: Extração de assignments
+                        with Timer("extract_assignments", timings):
+                            assignments_data = reader.get_assignments(
+                                assignment_custom_fields=fields_by_class.get("ASSIGNMENT", [])
+                            )
+                        
+                        # Fase 15: Import assignments
+                        with Timer("import_assignments", timings):
+                            assignment_count = self._import_assignments(
+                                cur, project_id, assignments_data, task_id_map, resource_id_map
+                            )
+                        report.assignments = assignment_count
+
+                        # Fase 16: Extração de timephased data
+                        with Timer("extract_timephased", timings):
+                            timephased_data, negative_values_count = reader.get_assignment_timephased()
+                        
+                        # Fase 17: Import timephased data
+                        with Timer("import_timephased", timings):
+                            planned_rows, complete_rows, assignments_with_timephased = self._import_assignment_timephased(
+                                cur, project_id, timephased_data
+                            )
+                        timephased_planned_rows = planned_rows
+                        timephased_complete_rows = complete_rows
+                        timephased_assignments_with_data = assignments_with_timephased
+                        timephased_negative_values_count = negative_values_count
+
+                        # Fase 18: Import dependencies (já extraídas no bundle)
+                        with Timer("import_dependencies", timings):
+                            dependency_count = self._import_dependencies(
+                                cur, project_id, dependencies_data, task_id_map
+                            )
+                        report.dependencies = dependency_count
+
+                        # Fase 19: Import baselines (já extraídas nos bundles)
+                        with Timer("import_baselines", timings):
+                            baseline_id_map = self._import_baselines(
+                                cur, project_id, baselines_meta
+                            )
+                            task_baseline_count = self._import_task_baselines(
+                                cur, baseline_id_map, task_id_map, task_baselines_data
+                            )
+                            resource_baseline_count = self._import_resource_baselines(
+                                cur, baseline_id_map, resource_id_map, resource_baselines_data
+                            )
+                        
+                        # Atualiza stats com contagens de baseline
+                        baseline_count = len(baseline_id_map) if baselines_meta else 0
+
                         # Calcula tempo total antes de salvar no log
                         total_elapsed = time.perf_counter() - total_start
                         timings["total"] = round(total_elapsed * 1000, 2)
                         report.timings_ms = timings
 
-                        # Fase 13: Registra log de importação
+                        # Fase 21: Registra log de importação
                         with Timer("create_import_log", timings):
                             cur.execute(
                                 """
@@ -476,6 +540,18 @@ class MPPImporter:
                                         "project_action": report.project_action,
                                         "project_name": report.project_name,
                                         "project_external_id": report.project_external_id,
+                                        "baselines_count": baseline_count,
+                                        "task_baselines_count": task_baseline_count,
+                                        "resource_baselines_count": resource_baseline_count,
+                                        "timephased_planned_rows": timephased_planned_rows,
+                                        "timephased_complete_rows": timephased_complete_rows,
+                                        "timephased_assignments_with_data": timephased_assignments_with_data,
+                                        "timephased_negative_values_count": timephased_negative_values_count,
+                                        "optimization": {
+                                            "bulk_inserts_enabled": True,
+                                            "single_pass_extraction": True,
+                                            "baseline_discovery_optimized": True,
+                                        },
                                     }),
                                     self.created_by,
                                 ),
@@ -562,9 +638,7 @@ class MPPImporter:
         project_id: int,
         definitions: List[Dict[str, Any]],
     ) -> int:
-        """Importa definições de campos customizados para o projeto.
-        
-        Usa UPSERT para atualizar definições existentes ou inserir novas.
+        """Importa definições de campos customizados usando bulk insert (otimizado).
         
         Returns:
             Número de definições importadas/atualizadas.
@@ -572,42 +646,48 @@ class MPPImporter:
         if not definitions:
             return 0
 
-        count = 0
+        # Prepara todas as linhas em memória
+        rows: List[Tuple[Any, ...]] = []
+        
         for defn in definitions:
             field_type = defn.get("field_type")
             field_class = defn.get("field_class")
             
             if not field_type or not field_class:
                 continue
-
-            # UPSERT: atualiza se já existe, senão insere
-            cur.execute(
-                """
-                INSERT INTO pm.custom_field_definition (
-                    project_id, field_type, field_class, alias, data_type, created_by
-                ) VALUES (
-                    %s, %s, %s, %s, %s, %s
-                )
-                ON CONFLICT (project_id, field_type, field_class)
-                WHERE deleted_at IS NULL
-                DO UPDATE SET
-                    alias = EXCLUDED.alias,
-                    data_type = EXCLUDED.data_type,
-                    updated_by = EXCLUDED.created_by,
-                    updated_at = CURRENT_TIMESTAMP
-                """,
-                (
-                    project_id,
-                    field_type,
-                    field_class,
-                    defn.get("alias"),
-                    defn.get("data_type", "STRING"),
-                    self.created_by,
-                ),
+            
+            rows.append((
+                project_id,
+                field_type,
+                field_class,
+                defn.get("alias"),
+                defn.get("data_type", "STRING"),
+                self.created_by,
+            ))
+        
+        if not rows:
+            return 0
+        
+        # Bulk insert com executemany
+        cur.executemany(
+            """
+            INSERT INTO pm.custom_field_definition (
+                project_id, field_type, field_class, alias, data_type, created_by
+            ) VALUES (
+                %s, %s, %s, %s, %s, %s
             )
-            count += 1
+            ON CONFLICT (project_id, field_type, field_class)
+            WHERE deleted_at IS NULL
+            DO UPDATE SET
+                alias = EXCLUDED.alias,
+                data_type = EXCLUDED.data_type,
+                updated_by = EXCLUDED.created_by,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            rows,
+        )
 
-        return count
+        return len(rows)
 
     def _import_calendars(
         self,
@@ -627,42 +707,64 @@ class MPPImporter:
         if not calendars:
             return 0
 
-        # Mapa de external_id -> calendar_id (do banco)
-        external_to_db_id: Dict[str, int] = {}
+        # Prepara linhas de calendários para bulk insert
+        calendar_rows: List[Tuple[Any, ...]] = []
+        valid_external_ids: List[str] = []
+        parent_updates: List[Tuple[int, str]] = []  # (calendar_id, parent_external_id)
         
-        # Primeira passada: UPSERT de todos os calendários
         for cal in calendars:
             external_id = cal.get("external_id")
             name = cal.get("name")
             
-            if not name:
+            if not name or not external_id:
                 continue
             
-            # UPSERT do calendário
-            cur.execute(
-                """
-                INSERT INTO pm.calendar (
-                    project_id, external_id, name, created_by
-                ) VALUES (
-                    %s, %s, %s, %s
-                )
-                ON CONFLICT (project_id, external_id)
-                WHERE deleted_at IS NULL AND external_id IS NOT NULL
-                DO UPDATE SET
-                    name = EXCLUDED.name,
-                    updated_by = EXCLUDED.created_by,
-                    updated_at = CURRENT_TIMESTAMP
-                RETURNING id
-                """,
-                (project_id, external_id, name, self.created_by),
+            calendar_rows.append((
+                project_id,
+                external_id,
+                name,
+                self.created_by,
+            ))
+            valid_external_ids.append(external_id)
+        
+        if not calendar_rows:
+            return 0
+        
+        # Bulk insert de calendários
+        cur.executemany(
+            """
+            INSERT INTO pm.calendar (
+                project_id, external_id, name, created_by
+            ) VALUES (
+                %s, %s, %s, %s
             )
-            row = cur.fetchone()
-            calendar_id = row[0] if row else None
-            
-            if calendar_id and external_id:
+            ON CONFLICT (project_id, external_id)
+            WHERE deleted_at IS NULL AND external_id IS NOT NULL
+            DO UPDATE SET
+                name = EXCLUDED.name,
+                updated_by = EXCLUDED.created_by,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            calendar_rows,
+        )
+        
+        # Busca todos os IDs com um único SELECT
+        cur.execute(
+            """
+            SELECT id, external_id FROM pm.calendar
+            WHERE project_id = %s AND external_id = ANY(%s) AND deleted_at IS NULL
+            """,
+            (project_id, valid_external_ids),
+        )
+        
+        external_to_db_id: Dict[str, int] = {}
+        for row in cur.fetchall():
+            calendar_id, external_id = row
+            if external_id:
                 external_to_db_id[external_id] = calendar_id
-
-        # Segunda passada: atualiza parent_calendar_id
+        
+        # Prepara updates de parent_calendar_id
+        parent_update_rows: List[Tuple[int, int]] = []
         for cal in calendars:
             external_id = cal.get("external_id")
             parent_external_id = cal.get("parent_external_id")
@@ -674,18 +776,27 @@ class MPPImporter:
             parent_id = external_to_db_id.get(parent_external_id)
             
             if calendar_id and parent_id:
-                cur.execute(
-                    """
-                    UPDATE pm.calendar SET
-                        parent_calendar_id = %s,
-                        updated_by = %s,
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE id = %s
-                    """,
-                    (parent_id, self.created_by, calendar_id),
-                )
+                parent_update_rows.append((parent_id, calendar_id))
+        
+        # Bulk update de parent_calendar_id
+        if parent_update_rows:
+            cur.executemany(
+                """
+                UPDATE pm.calendar SET
+                    parent_calendar_id = %s,
+                    updated_by = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+                """,
+                [(parent_id, self.created_by, calendar_id) for parent_id, calendar_id in parent_update_rows],
+            )
 
-        # Terceira passada: importa weekdays, working_times e exceptions
+        # Prepara linhas de weekdays, working_times e exceptions
+        weekday_rows: List[Tuple[Any, ...]] = []
+        working_time_rows: List[Tuple[Any, ...]] = []
+        exception_rows: List[Tuple[Any, ...]] = []
+        calendar_ids_for_delete: List[int] = []
+        
         for cal in calendars:
             external_id = cal.get("external_id")
             if not external_id:
@@ -695,89 +806,99 @@ class MPPImporter:
             if not calendar_id:
                 continue
             
-            # Importa dias da semana
+            calendar_ids_for_delete.append(calendar_id)
+            
+            # Prepara weekdays
             for weekday in cal.get("weekdays", []):
-                cur.execute(
-                    """
-                    INSERT INTO pm.calendar_weekday (
-                        calendar_id, day_of_week, working, created_by
-                    ) VALUES (
-                        %s, %s, %s, %s
-                    )
-                    ON CONFLICT (calendar_id, day_of_week)
-                    WHERE deleted_at IS NULL
-                    DO UPDATE SET
-                        working = EXCLUDED.working,
-                        updated_by = EXCLUDED.created_by,
-                        updated_at = CURRENT_TIMESTAMP
-                    """,
-                    (
-                        calendar_id,
-                        weekday.get("day_of_week"),
-                        weekday.get("working", False),
-                        self.created_by,
-                    ),
-                )
+                weekday_rows.append((
+                    calendar_id,
+                    weekday.get("day_of_week"),
+                    weekday.get("working", False),
+                    self.created_by,
+                ))
             
-            # Limpa working times antigos e insere novos
-            cur.execute(
-                """
-                UPDATE pm.calendar_working_time SET
-                    deleted_at = CURRENT_TIMESTAMP,
-                    deleted_by = %s
-                WHERE calendar_id = %s AND deleted_at IS NULL
-                """,
-                (self.created_by, calendar_id),
-            )
-            
+            # Prepara working_times
             for wt in cal.get("working_times", []):
                 if wt.get("start_time") and wt.get("end_time"):
-                    cur.execute(
-                        """
-                        INSERT INTO pm.calendar_working_time (
-                            calendar_id, day_of_week, start_time, end_time, created_by
-                        ) VALUES (
-                            %s, %s, %s, %s, %s
-                        )
-                        """,
-                        (
-                            calendar_id,
-                            wt.get("day_of_week"),
-                            wt.get("start_time"),
-                            wt.get("end_time"),
-                            self.created_by,
-                        ),
-                    )
+                    working_time_rows.append((
+                        calendar_id,
+                        wt.get("day_of_week"),
+                        wt.get("start_time"),
+                        wt.get("end_time"),
+                        self.created_by,
+                    ))
             
-            # Importa exceções
+            # Prepara exceptions
             for exc in cal.get("exceptions", []):
                 from_date = exc.get("from_date")
-                if not from_date:
-                    continue
-                
-                # Por simplicidade, usa apenas from_date como exception_date
-                # Para ranges de data, seria necessário expandir
-                cur.execute(
-                    """
-                    INSERT INTO pm.calendar_exception (
-                        calendar_id, exception_date, working, created_by
-                    ) VALUES (
-                        %s, %s, %s, %s
-                    )
-                    ON CONFLICT (calendar_id, exception_date)
-                    WHERE deleted_at IS NULL
-                    DO UPDATE SET
-                        working = EXCLUDED.working,
-                        updated_by = EXCLUDED.created_by,
-                        updated_at = CURRENT_TIMESTAMP
-                    """,
-                    (
+                if from_date:
+                    exception_rows.append((
                         calendar_id,
                         from_date,
                         exc.get("working", False),
                         self.created_by,
-                    ),
+                    ))
+        
+        # Delete em massa de working_times antigos
+        if calendar_ids_for_delete:
+            cur.execute(
+                """
+                DELETE FROM pm.calendar_working_time
+                WHERE calendar_id = ANY(%s) AND deleted_at IS NULL
+                """,
+                (calendar_ids_for_delete,),
+            )
+        
+        # Bulk insert de weekdays
+        if weekday_rows:
+            cur.executemany(
+                """
+                INSERT INTO pm.calendar_weekday (
+                    calendar_id, day_of_week, working, created_by
+                ) VALUES (
+                    %s, %s, %s, %s
                 )
+                ON CONFLICT (calendar_id, day_of_week)
+                WHERE deleted_at IS NULL
+                DO UPDATE SET
+                    working = EXCLUDED.working,
+                    updated_by = EXCLUDED.created_by,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                weekday_rows,
+            )
+        
+        # Bulk insert de working_times
+        if working_time_rows:
+            cur.executemany(
+                """
+                INSERT INTO pm.calendar_working_time (
+                    calendar_id, day_of_week, start_time, end_time, created_by
+                ) VALUES (
+                    %s, %s, %s, %s, %s
+                )
+                """,
+                working_time_rows,
+            )
+        
+        # Bulk insert de exceptions
+        if exception_rows:
+            cur.executemany(
+                """
+                INSERT INTO pm.calendar_exception (
+                    calendar_id, exception_date, working, created_by
+                ) VALUES (
+                    %s, %s, %s, %s
+                )
+                ON CONFLICT (calendar_id, exception_date)
+                WHERE deleted_at IS NULL
+                DO UPDATE SET
+                    working = EXCLUDED.working,
+                    updated_by = EXCLUDED.created_by,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                exception_rows,
+            )
 
         return len(external_to_db_id)
 
@@ -787,7 +908,7 @@ class MPPImporter:
         project_id: int,
         resources: List[Dict[str, Any]],
     ) -> Tuple[int, Dict[str, int]]:
-        """Importa recursos do projeto.
+        """Importa recursos do projeto usando bulk insert (otimizado).
         
         Returns:
             Tuple com:
@@ -797,18 +918,41 @@ class MPPImporter:
         if not resources:
             return 0, {}
 
-        external_to_db_id: Dict[str, int] = {}
+        # Prepara todas as linhas em memória
+        rows: List[Tuple[Any, ...]] = []
+        valid_external_ids: List[str] = []
         
         for res in resources:
             external_id = res.get("external_id")
             name = res.get("name")
             
-            # Resources sem nome são ignorados (ex: "Unassigned")
-            if not name:
+            if not name or not external_id:
                 continue
             
-            # UPSERT do resource
-            cur.execute(
+            rows.append((
+                project_id,
+                external_id,
+                name,
+                res.get("email"),
+                res.get("type"),
+                res.get("group"),
+                res.get("max_units"),
+                res.get("standard_rate"),
+                res.get("cost"),
+                res.get("notes"),
+                json.dumps(res.get("custom_fields", {})),
+                self.created_by,
+            ))
+            valid_external_ids.append(external_id)
+        
+        if not rows:
+            return 0, {}
+        
+        # Bulk insert com executemany
+        chunk_size = 5000
+        for i in range(0, len(rows), chunk_size):
+            chunk = rows[i:i + chunk_size]
+            cur.executemany(
                 """
                 INSERT INTO pm.resource (
                     project_id, external_id, name, email, type, "group",
@@ -830,27 +974,23 @@ class MPPImporter:
                     custom_fields = EXCLUDED.custom_fields,
                     updated_by = EXCLUDED.created_by,
                     updated_at = CURRENT_TIMESTAMP
-                RETURNING id
                 """,
-                (
-                    project_id,
-                    external_id,
-                    name,
-                    res.get("email"),
-                    res.get("type"),
-                    res.get("group"),
-                    res.get("max_units"),
-                    res.get("standard_rate"),
-                    res.get("cost"),
-                    res.get("notes"),
-                    json.dumps(res.get("custom_fields", {})),
-                    self.created_by,
-                ),
+                chunk,
             )
-            row = cur.fetchone()
-            resource_id = row[0] if row else None
-            
-            if resource_id and external_id:
+        
+        # Busca todos os IDs com um único SELECT
+        cur.execute(
+            """
+            SELECT id, external_id FROM pm.resource
+            WHERE project_id = %s AND external_id = ANY(%s) AND deleted_at IS NULL
+            """,
+            (project_id, valid_external_ids),
+        )
+        
+        external_to_db_id: Dict[str, int] = {}
+        for row in cur.fetchall():
+            resource_id, external_id = row
+            if external_id:
                 external_to_db_id[external_id] = resource_id
 
         return len(external_to_db_id), external_to_db_id
@@ -861,7 +1001,7 @@ class MPPImporter:
         project_id: int,
         tasks: List[Dict[str, Any]],
     ) -> Tuple[int, Dict[str, int]]:
-        """Importa tarefas do projeto.
+        """Importa tarefas do projeto usando bulk insert (otimizado).
         
         Returns:
             Tuple com:
@@ -871,18 +1011,45 @@ class MPPImporter:
         if not tasks:
             return 0, {}
 
-        external_to_db_id: Dict[str, int] = {}
+        # Prepara todas as linhas em memória
+        rows: List[Tuple[Any, ...]] = []
+        valid_external_ids: List[str] = []
         
         for task in tasks:
             external_id = task.get("external_id")
             name = task.get("name")
             
-            # Tasks sem nome são ignoradas
-            if not name:
+            if not name or not external_id:
                 continue
             
-            # UPSERT da task
-            cur.execute(
+            rows.append((
+                project_id,
+                external_id,
+                name,
+                parse_iso_datetime(task.get("start")),
+                parse_iso_datetime(task.get("finish")),
+                task.get("duration"),
+                task.get("work"),
+                task.get("percent_complete", 0),
+                task.get("priority"),
+                task.get("notes"),
+                task.get("wbs"),
+                task.get("outline_level", 0),
+                task.get("milestone", False),
+                task.get("summary", False),
+                json.dumps(task.get("custom_fields", {})),
+                self.created_by,
+            ))
+            valid_external_ids.append(external_id)
+        
+        if not rows:
+            return 0, {}
+        
+        # Bulk insert com executemany (chunking para evitar SQL muito grande)
+        chunk_size = 5000
+        for i in range(0, len(rows), chunk_size):
+            chunk = rows[i:i + chunk_size]
+            cur.executemany(
                 """
                 INSERT INTO pm.task (
                     project_id, external_id, name, start_date, finish_date,
@@ -909,31 +1076,553 @@ class MPPImporter:
                     custom_fields = EXCLUDED.custom_fields,
                     updated_by = EXCLUDED.created_by,
                     updated_at = CURRENT_TIMESTAMP
-                RETURNING id
                 """,
-                (
-                    project_id,
-                    external_id,
-                    name,
-                    parse_iso_datetime(task.get("start")),
-                    parse_iso_datetime(task.get("finish")),
-                    task.get("duration"),
-                    task.get("work"),
-                    task.get("percent_complete", 0),
-                    task.get("priority"),
-                    task.get("notes"),
-                    task.get("wbs"),
-                    task.get("outline_level", 0),
-                    task.get("milestone", False),
-                    task.get("summary", False),
-                    json.dumps(task.get("custom_fields", {})),
-                    self.created_by,
-                ),
+                chunk,
             )
-            row = cur.fetchone()
-            task_id = row[0] if row else None
-            
-            if task_id and external_id:
+        
+        # Busca todos os IDs com um único SELECT
+        cur.execute(
+            """
+            SELECT id, external_id FROM pm.task
+            WHERE project_id = %s AND external_id = ANY(%s) AND deleted_at IS NULL
+            """,
+            (project_id, valid_external_ids),
+        )
+        
+        external_to_db_id: Dict[str, int] = {}
+        for row in cur.fetchall():
+            task_id, external_id = row
+            if external_id:
                 external_to_db_id[external_id] = task_id
 
         return len(external_to_db_id), external_to_db_id
+
+    def _import_assignments(
+        self,
+        cur,
+        project_id: int,
+        assignments: List[Dict[str, Any]],
+        task_id_map: Dict[str, int],
+        resource_id_map: Dict[str, int],
+    ) -> int:
+        """Importa assignments usando bulk insert (otimizado).
+        
+        Args:
+            cur: Cursor do banco
+            project_id: ID do projeto
+            assignments: Lista de assignments extraídos do .mpp
+            task_id_map: Mapa de external_id -> task_id (do banco)
+            resource_id_map: Mapa de external_id -> resource_id (do banco)
+        
+        Returns:
+            Número de assignments importados/atualizados
+        """
+        if not assignments:
+            return 0
+
+        # Prepara todas as linhas em memória
+        rows: List[Tuple[Any, ...]] = []
+        
+        for assignment in assignments:
+            external_id = assignment.get("external_id")
+            task_external_id = assignment.get("task_external_id")
+            resource_external_id = assignment.get("resource_external_id")
+            
+            task_id = task_id_map.get(task_external_id) if task_external_id else None
+            resource_id = resource_id_map.get(resource_external_id) if resource_external_id else None
+            
+            if not task_id or not resource_id or not external_id:
+                continue
+            
+            rows.append((
+                project_id,
+                external_id,
+                task_id,
+                resource_id,
+                assignment.get("work"),
+                assignment.get("cost"),
+                parse_iso_datetime(assignment.get("start")),
+                parse_iso_datetime(assignment.get("finish")),
+                assignment.get("units"),
+                assignment.get("percent_complete", 0),
+                json.dumps(assignment.get("custom_fields", {})),
+                self.created_by,
+            ))
+        
+        if not rows:
+            return 0
+        
+        # Bulk insert com executemany
+        chunk_size = 5000
+        for i in range(0, len(rows), chunk_size):
+            chunk = rows[i:i + chunk_size]
+            cur.executemany(
+                """
+                INSERT INTO pm.assignment (
+                    project_id, external_id, task_id, resource_id,
+                    work, cost, start_date, finish_date, units,
+                    percent_complete, custom_fields, created_by
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                )
+                ON CONFLICT (project_id, external_id)
+                WHERE deleted_at IS NULL AND external_id IS NOT NULL
+                DO UPDATE SET
+                    task_id = EXCLUDED.task_id,
+                    resource_id = EXCLUDED.resource_id,
+                    work = EXCLUDED.work,
+                    cost = EXCLUDED.cost,
+                    start_date = EXCLUDED.start_date,
+                    finish_date = EXCLUDED.finish_date,
+                    units = EXCLUDED.units,
+                    percent_complete = EXCLUDED.percent_complete,
+                    custom_fields = EXCLUDED.custom_fields,
+                    updated_by = EXCLUDED.created_by,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                chunk,
+            )
+
+        return len(rows)
+
+    def _import_dependencies(
+        self,
+        cur,
+        project_id: int,
+        dependencies: List[Dict[str, Any]],
+        task_id_map: Dict[str, int],
+    ) -> int:
+        """Importa dependências usando bulk insert (otimizado).
+        
+        Args:
+            cur: Cursor do banco
+            project_id: ID do projeto
+            dependencies: Lista de dependências extraídas do .mpp
+            task_id_map: Mapa de external_id -> task_id (do banco)
+        
+        Returns:
+            Número de dependências importadas/atualizadas
+        """
+        if not dependencies:
+            return 0
+
+        # Prepara todas as linhas em memória
+        rows: List[Tuple[Any, ...]] = []
+        
+        for dep in dependencies:
+            predecessor_external_id = dep.get("predecessor_external_id")
+            successor_external_id = dep.get("successor_external_id")
+            
+            predecessor_task_id = task_id_map.get(predecessor_external_id) if predecessor_external_id else None
+            successor_task_id = task_id_map.get(successor_external_id) if successor_external_id else None
+            
+            if not predecessor_task_id or not successor_task_id:
+                continue
+            
+            # Evita dependências circulares
+            if predecessor_task_id == successor_task_id:
+                continue
+            
+            rows.append((
+                project_id,
+                predecessor_task_id,
+                successor_task_id,
+                dep.get("type"),
+                dep.get("lag"),
+                self.created_by,
+            ))
+        
+        if not rows:
+            return 0
+        
+        # Bulk insert com executemany
+        chunk_size = 5000
+        for i in range(0, len(rows), chunk_size):
+            chunk = rows[i:i + chunk_size]
+            cur.executemany(
+                """
+                INSERT INTO pm.task_dependency (
+                    project_id, predecessor_task_id, successor_task_id,
+                    dependency_type, lag, created_by
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s
+                )
+                ON CONFLICT (predecessor_task_id, successor_task_id)
+                WHERE deleted_at IS NULL
+                DO UPDATE SET
+                    dependency_type = EXCLUDED.dependency_type,
+                    lag = EXCLUDED.lag,
+                    updated_by = EXCLUDED.created_by,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                chunk,
+            )
+
+        return len(rows)
+
+    def _import_baselines(
+        self,
+        cur,
+        project_id: int,
+        baselines_meta: List[Dict[str, Any]],
+    ) -> Dict[str, int]:
+        """Importa linhas de base (baselines) do projeto.
+        
+        Args:
+            cur: Cursor do banco
+            project_id: ID do projeto
+            baselines_meta: Lista de metadados de baseline (index, external_id, name)
+        
+        Returns:
+            Mapa de external_id -> baseline_id (do banco)
+        """
+        if not baselines_meta:
+            return {}
+
+        # Prepara linhas para bulk insert
+        baseline_rows: List[Tuple[Any, ...]] = []
+        valid_external_ids: List[str] = []
+        
+        for baseline_meta in baselines_meta:
+            external_id = baseline_meta.get("external_id")
+            name = baseline_meta.get("name")
+            
+            if not external_id or not name:
+                continue
+            
+            baseline_rows.append((
+                project_id,
+                external_id,
+                name,
+                self.created_by,
+            ))
+            valid_external_ids.append(external_id)
+        
+        if not baseline_rows:
+            return {}
+        
+        # Bulk insert de baselines
+        cur.executemany(
+            """
+            INSERT INTO pm.baseline (
+                project_id, external_id, name, created_by
+            ) VALUES (
+                %s, %s, %s, %s
+            )
+            ON CONFLICT (project_id, external_id)
+            WHERE deleted_at IS NULL AND external_id IS NOT NULL
+            DO UPDATE SET
+                name = EXCLUDED.name,
+                updated_by = EXCLUDED.created_by,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            baseline_rows,
+        )
+        
+        # Busca todos os IDs com um único SELECT
+        cur.execute(
+            """
+            SELECT id, external_id FROM pm.baseline
+            WHERE project_id = %s AND external_id = ANY(%s) AND deleted_at IS NULL
+            """,
+            (project_id, valid_external_ids),
+        )
+        
+        external_to_db_id: Dict[str, int] = {}
+        for row in cur.fetchall():
+            baseline_id, external_id = row
+            if external_id:
+                external_to_db_id[external_id] = baseline_id
+
+        return external_to_db_id
+
+    def _import_task_baselines(
+        self,
+        cur,
+        baseline_id_map: Dict[str, int],
+        task_id_map: Dict[str, int],
+        task_baselines: List[Dict[str, Any]],
+    ) -> int:
+        """Importa valores de baseline para tasks.
+        
+        Args:
+            cur: Cursor do banco
+            baseline_id_map: Mapa de external_id -> baseline_id
+            task_id_map: Mapa de external_id -> task_id
+            task_baselines: Lista de task baselines extraídos
+        
+        Returns:
+            Número de task baselines importados/atualizados
+        """
+        if not task_baselines or not baseline_id_map:
+            return 0
+
+        # Otimização: delete em massa + bulk insert (muito mais rápido que milhares de UPSERTs)
+        baseline_ids = list({bid for bid in baseline_id_map.values() if bid is not None})
+        if not baseline_ids:
+            return 0
+
+        # Remove tudo das baselines deste import (hard delete)
+        cur.execute(
+            """
+            DELETE FROM pm.task_baseline
+            WHERE baseline_id = ANY(%s)
+            """,
+            (baseline_ids,),
+        )
+
+        rows: list[tuple[Any, ...]] = []
+        for tb in task_baselines:
+            task_external_id = tb.get("task_external_id")
+            baseline_index = tb.get("baseline_index")
+            baseline_external_id = str(baseline_index) if baseline_index is not None else None
+
+            task_id = task_id_map.get(task_external_id) if task_external_id else None
+            baseline_id = baseline_id_map.get(baseline_external_id) if baseline_external_id else None
+
+            if not task_id or not baseline_id:
+                continue
+
+            rows.append(
+                (
+                    baseline_id,
+                    task_id,
+                    parse_iso_datetime(tb.get("start_date")),
+                    parse_iso_datetime(tb.get("finish_date")),
+                    tb.get("duration"),
+                    tb.get("work"),
+                    tb.get("cost"),
+                    self.created_by,
+                )
+            )
+
+        if not rows:
+            return 0
+
+        # Bulk insert com chunking
+        chunk_size = 5000
+        for i in range(0, len(rows), chunk_size):
+            chunk = rows[i:i + chunk_size]
+            cur.executemany(
+                """
+                INSERT INTO pm.task_baseline (
+                    baseline_id, task_id, start_date, finish_date,
+                    duration, work, cost, created_by
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s
+                )
+                """,
+                chunk,
+            )
+
+        return len(rows)
+
+    def _import_resource_baselines(
+        self,
+        cur,
+        baseline_id_map: Dict[str, int],
+        resource_id_map: Dict[str, int],
+        resource_baselines: List[Dict[str, Any]],
+    ) -> int:
+        """Importa valores de baseline para resources.
+        
+        Args:
+            cur: Cursor do banco
+            baseline_id_map: Mapa de external_id -> baseline_id
+            resource_id_map: Mapa de external_id -> resource_id
+            resource_baselines: Lista de resource baselines extraídos
+        
+        Returns:
+            Número de resource baselines importados/atualizados
+        """
+        if not resource_baselines or not baseline_id_map:
+            return 0
+
+        baseline_ids = list({bid for bid in baseline_id_map.values() if bid is not None})
+        if not baseline_ids:
+            return 0
+
+        # Remove tudo das baselines deste import (hard delete)
+        cur.execute(
+            """
+            DELETE FROM pm.resource_baseline
+            WHERE baseline_id = ANY(%s)
+            """,
+            (baseline_ids,),
+        )
+
+        rows: list[tuple[Any, ...]] = []
+        for rb in resource_baselines:
+            resource_external_id = rb.get("resource_external_id")
+            baseline_index = rb.get("baseline_index")
+            baseline_external_id = str(baseline_index) if baseline_index is not None else None
+
+            resource_id = resource_id_map.get(resource_external_id) if resource_external_id else None
+            baseline_id = baseline_id_map.get(baseline_external_id) if baseline_external_id else None
+
+            if not resource_id or not baseline_id:
+                continue
+
+            rows.append(
+                (
+                    baseline_id,
+                    resource_id,
+                    rb.get("work"),
+                    rb.get("cost"),
+                    self.created_by,
+                )
+            )
+
+        if not rows:
+            return 0
+
+        # Bulk insert com chunking
+        chunk_size = 5000
+        for i in range(0, len(rows), chunk_size):
+            chunk = rows[i:i + chunk_size]
+            cur.executemany(
+                """
+                INSERT INTO pm.resource_baseline (
+                    baseline_id, resource_id, work, cost, created_by
+                ) VALUES (
+                    %s, %s, %s, %s, %s
+                )
+                """,
+                chunk,
+            )
+
+        return len(rows)
+
+    def _import_assignment_timephased(
+        self,
+        cur,
+        project_id: int,
+        timephased_data: List[Dict[str, Any]],
+    ) -> Tuple[int, int, int]:
+        """Importa dados timephased (planned e complete) de assignments.
+        
+        Args:
+            cur: Cursor do banco
+            project_id: ID do projeto
+            timephased_data: Lista de timephased data extraída do .mpp
+        
+        Returns:
+            Tuple com:
+            - Número de linhas planned importadas
+            - Número de linhas complete importadas
+            - Número de assignments com dados timephased
+        """
+        if not timephased_data:
+            return 0, 0, 0
+
+        # Constrói mapa de assignment_external_id -> assignment_id
+        # Busca todos os assignments do projeto
+        cur.execute(
+            """
+            SELECT id, external_id FROM pm.assignment
+            WHERE project_id = %s AND deleted_at IS NULL
+            """,
+            (project_id,),
+        )
+        assignment_map: Dict[str, int] = {}
+        for row in cur.fetchall():
+            assignment_id, external_id = row
+            if external_id:
+                assignment_map[external_id] = assignment_id
+
+        # Coleta assignment_ids que têm dados timephased
+        assignment_ids_to_process: List[int] = []
+        planned_rows_data: List[Tuple[Any, ...]] = []
+        complete_rows_data: List[Tuple[Any, ...]] = []
+        
+        for td in timephased_data:
+            assignment_external_id = td.get("assignment_external_id")
+            assignment_id = assignment_map.get(assignment_external_id) if assignment_external_id else None
+            
+            if not assignment_id:
+                continue
+            
+            planned_periods = td.get("planned", [])
+            complete_periods = td.get("complete", [])
+            
+            if not planned_periods and not complete_periods:
+                continue
+            
+            assignment_ids_to_process.append(assignment_id)
+            
+            # Prepara linhas planned
+            for period in planned_periods:
+                planned_rows_data.append((
+                    assignment_id,
+                    parse_iso_datetime(period.get("period_start")),
+                    parse_iso_datetime(period.get("period_end")),
+                    period.get("work"),
+                    period.get("cost"),
+                    period.get("units"),
+                    self.created_by,
+                ))
+            
+            # Prepara linhas complete
+            for period in complete_periods:
+                complete_rows_data.append((
+                    assignment_id,
+                    parse_iso_datetime(period.get("period_start")),
+                    parse_iso_datetime(period.get("period_end")),
+                    period.get("work"),
+                    period.get("cost"),
+                    period.get("units"),
+                    self.created_by,
+                ))
+        
+        if not assignment_ids_to_process:
+            return 0, 0, 0
+        
+        # Delete físico em massa dos dados antigos
+        cur.execute(
+            """
+            DELETE FROM pm.assignment_timephased_planned
+            WHERE assignment_id = ANY(%s) AND deleted_at IS NULL
+            """,
+            (assignment_ids_to_process,),
+        )
+        
+        cur.execute(
+            """
+            DELETE FROM pm.assignment_timephased_complete
+            WHERE assignment_id = ANY(%s) AND deleted_at IS NULL
+            """,
+            (assignment_ids_to_process,),
+        )
+        
+        # Bulk insert planned com chunking
+        chunk_size = 10000
+        for i in range(0, len(planned_rows_data), chunk_size):
+            chunk = planned_rows_data[i:i + chunk_size]
+            cur.executemany(
+                """
+                INSERT INTO pm.assignment_timephased_planned (
+                    assignment_id, period_start, period_end,
+                    work, cost, units, created_by
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s, %s
+                )
+                """,
+                chunk,
+            )
+        
+        # Bulk insert complete com chunking
+        for i in range(0, len(complete_rows_data), chunk_size):
+            chunk = complete_rows_data[i:i + chunk_size]
+            cur.executemany(
+                """
+                INSERT INTO pm.assignment_timephased_complete (
+                    assignment_id, period_start, period_end,
+                    work, cost, units, created_by
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s, %s
+                )
+                """,
+                chunk,
+            )
+
+        return len(planned_rows_data), len(complete_rows_data), len(assignment_ids_to_process)

@@ -650,6 +650,657 @@ class MPPReader:
         except Exception:
             return None
 
+    def _convert_cost(self, cost_obj) -> Optional[float]:
+        """Converte custo (pode ser Rate ou Amount)."""
+        if cost_obj is None:
+            return None
+        try:
+            if hasattr(cost_obj, "getAmount"):
+                return float(cost_obj.getAmount())
+            if hasattr(cost_obj, "getValue"):
+                return float(cost_obj.getValue())
+            return float(cost_obj)
+        except Exception:
+            return None
+
+    def get_baseline_indices_and_names(self) -> List[Dict[str, Any]]:
+        """Descobre quais baselines existem no projeto.
+        
+        Returns:
+            Lista de dicts com 'index', 'external_id', 'name'
+        """
+        if not self.project:
+            self.read()
+
+        # Otimização: evitar varrer *todas* as tasks para "descobrir" baselines.
+        # No MS Project, a interpretação padrão é Baseline(0) + Baseline 1..10.
+        # Para não criar baselines vazias quando não existe nenhuma, fazemos apenas
+        # uma verificação rápida em uma amostra de tasks.
+        max_baselines = 11  # 0..10
+        max_tasks_sample = 200
+
+        try:
+            TaskField = _get_java_class("TaskField")
+        except Exception:
+            TaskField = None
+
+        if TaskField is None:
+            # Fallback: assume 0..10 (não conseguimos checar presença de dados)
+            return [
+                {
+                    "index": idx,
+                    "external_id": str(idx),
+                    "name": "Baseline" if idx == 0 else f"Baseline {idx}",
+                }
+                for idx in range(max_baselines)
+            ]
+
+        # Pre-computa campos por baseline (evita getattr repetido dentro do loop)
+        fields_by_idx: Dict[int, Dict[str, Any]] = {}
+        for idx in range(max_baselines):
+            if idx == 0:
+                fields_by_idx[idx] = {
+                    "start": TaskField.BASELINE_START,
+                    "finish": TaskField.BASELINE_FINISH,
+                    "work": TaskField.BASELINE_WORK,
+                    "cost": TaskField.BASELINE_COST,
+                }
+            else:
+                fields_by_idx[idx] = {
+                    "start": getattr(TaskField, f"BASELINE{idx}_START", None),
+                    "finish": getattr(TaskField, f"BASELINE{idx}_FINISH", None),
+                    "work": getattr(TaskField, f"BASELINE{idx}_WORK", None),
+                    "cost": getattr(TaskField, f"BASELINE{idx}_COST", None),
+                }
+
+        found_indices: set[int] = set()
+        seen = 0
+        for task in self.project.getTasks():
+            if task is None:
+                continue
+            if not hasattr(task, "get"):
+                continue
+
+            seen += 1
+            for idx, f in fields_by_idx.items():
+                try:
+                    start_field = f.get("start")
+                    if start_field is None:
+                        continue
+                    if (
+                        task.get(start_field)
+                        or (f.get("finish") and task.get(f["finish"]))
+                        or (f.get("work") and task.get(f["work"]))
+                        or (f.get("cost") and task.get(f["cost"]))
+                    ):
+                        found_indices.add(idx)
+                except Exception:
+                    continue
+
+            if seen >= max_tasks_sample:
+                break
+
+        # Se não encontrou nada na amostra, consideramos que não há baselines para importar
+        if not found_indices:
+            return []
+
+        return [
+            {
+                "index": idx,
+                "external_id": str(idx),
+                "name": "Baseline" if idx == 0 else f"Baseline {idx}",
+            }
+            for idx in sorted(found_indices)
+        ]
+
+    def get_task_baselines(self, baseline_indices: List[int]) -> List[Dict[str, Any]]:
+        """Extrai valores de baseline para todas as tasks.
+        
+        Args:
+            baseline_indices: Lista de índices de baseline a extrair (ex: [0, 1, 2])
+        
+        Returns:
+            Lista de dicts com task_external_id, baseline_index e valores
+        """
+        if not self.project:
+            self.read()
+
+        task_baselines = []
+        
+        try:
+            TaskField = _get_java_class("TaskField")
+        except Exception:
+            return task_baselines
+        
+        for task in self.project.getTasks():
+            if task is None:
+                continue
+            
+            task_external_id = str(task.getUniqueID()) if task.getUniqueID() else None
+            if not task_external_id:
+                continue
+            
+            for baseline_idx in baseline_indices:
+                try:
+                    # Determina campos baseado no índice
+                    if baseline_idx == 0:
+                        start_field = TaskField.BASELINE_START
+                        finish_field = TaskField.BASELINE_FINISH
+                        duration_field = TaskField.BASELINE_DURATION
+                        work_field = TaskField.BASELINE_WORK
+                        cost_field = TaskField.BASELINE_COST
+                    else:
+                        start_field = getattr(TaskField, f"BASELINE{baseline_idx}_START", None)
+                        finish_field = getattr(TaskField, f"BASELINE{baseline_idx}_FINISH", None)
+                        duration_field = getattr(TaskField, f"BASELINE{baseline_idx}_DURATION", None)
+                        work_field = getattr(TaskField, f"BASELINE{baseline_idx}_WORK", None)
+                        cost_field = getattr(TaskField, f"BASELINE{baseline_idx}_COST", None)
+                    
+                    if not start_field:
+                        continue
+                    
+                    # Extrai valores usando get() genérico
+                    start_val = task.get(start_field) if hasattr(task, "get") else None
+                    finish_val = task.get(finish_field) if finish_field and hasattr(task, "get") else None
+                    duration_val = task.get(duration_field) if duration_field and hasattr(task, "get") else None
+                    work_val = task.get(work_field) if work_field and hasattr(task, "get") else None
+                    cost_val = task.get(cost_field) if cost_field and hasattr(task, "get") else None
+                    
+                    # Só adiciona se houver pelo menos um valor
+                    if start_val or finish_val or duration_val or work_val or cost_val:
+                        task_baselines.append({
+                            "task_external_id": task_external_id,
+                            "baseline_index": baseline_idx,
+                            "start_date": self._convert_date(start_val),
+                            "finish_date": self._convert_date(finish_val),
+                            "duration": self._convert_duration(duration_val),
+                            "work": self._convert_duration(work_val),
+                            "cost": self._convert_cost(cost_val),
+                        })
+                except Exception:
+                    continue
+        
+        return task_baselines
+
+    def extract_tasks_bundle(
+        self,
+        task_custom_fields: Optional[List[Any]] = None,
+        baseline_indices: Optional[List[int]] = None,
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """Extrai tasks, dependencies e task baselines em um único loop (otimização).
+        
+        Args:
+            task_custom_fields: Lista opcional de CustomField objects para tasks
+            baseline_indices: Lista de índices de baseline a extrair (None = não extrair)
+        
+        Returns:
+            Tuple com (tasks, dependencies, task_baselines)
+        """
+        if not self.project:
+            self.read()
+
+        tasks: List[Dict[str, Any]] = []
+        dependencies: List[Dict[str, Any]] = []
+        task_baselines: List[Dict[str, Any]] = []
+        
+        TaskField = None
+        if baseline_indices:
+            try:
+                TaskField = _get_java_class("TaskField")
+            except Exception:
+                pass
+        
+        # Pre-computa campos baseline por índice (evita getattr repetido)
+        baseline_fields_by_idx: Dict[int, Dict[str, Any]] = {}
+        if TaskField and baseline_indices:
+            for idx in baseline_indices:
+                if idx == 0:
+                    baseline_fields_by_idx[idx] = {
+                        "start": TaskField.BASELINE_START,
+                        "finish": TaskField.BASELINE_FINISH,
+                        "duration": TaskField.BASELINE_DURATION,
+                        "work": TaskField.BASELINE_WORK,
+                        "cost": TaskField.BASELINE_COST,
+                    }
+                else:
+                    baseline_fields_by_idx[idx] = {
+                        "start": getattr(TaskField, f"BASELINE{idx}_START", None),
+                        "finish": getattr(TaskField, f"BASELINE{idx}_FINISH", None),
+                        "duration": getattr(TaskField, f"BASELINE{idx}_DURATION", None),
+                        "work": getattr(TaskField, f"BASELINE{idx}_WORK", None),
+                        "cost": getattr(TaskField, f"BASELINE{idx}_COST", None),
+                    }
+        
+        # Único loop sobre tasks
+        for task in self.project.getTasks():
+            if task is None:
+                continue
+
+            unique_id = task.getUniqueID()
+            task_external_id = str(unique_id) if unique_id else None
+            
+            if not task_external_id:
+                continue
+            
+            # Extrai task core
+            task_data = {
+                "external_id": task_external_id,
+                "id": str(task.getID()) if task.getID() else None,
+                "name": str(task.getName()) if task.getName() else None,
+                "start": self._convert_date(task.getStart()),
+                "finish": self._convert_date(task.getFinish()),
+                "duration": self._convert_duration(task.getDuration()),
+                "work": self._convert_duration(task.getWork()),
+                "percent_complete": int(task.getPercentageComplete()) if task.getPercentageComplete() else 0,
+                "priority": self._convert_priority(task.getPriority()),
+                "notes": str(task.getNotes()) if task.getNotes() else None,
+                "wbs": str(task.getWBS()) if task.getWBS() else None,
+                "outline_level": int(task.getOutlineLevel()) if task.getOutlineLevel() else 0,
+                "milestone": bool(task.getMilestone()) if task.getMilestone() else False,
+                "summary": bool(task.getSummary()) if task.getSummary() else False,
+                "custom_fields": {},
+            }
+
+            if task_custom_fields:
+                task_data["custom_fields"] = self._extract_custom_field_values(task, task_custom_fields)
+            
+            tasks.append(task_data)
+            
+            # Extrai dependencies (predecessors) no mesmo loop
+            try:
+                predecessors = task.getPredecessors()
+                if predecessors:
+                    for predecessor in predecessors:
+                        target_task = None
+                        if hasattr(predecessor, "getTargetTask"):
+                            target_task = predecessor.getTargetTask()
+                        elif hasattr(predecessor, "getPredecessorTask"):
+                            target_task = predecessor.getPredecessorTask()
+                        elif hasattr(predecessor, "getSourceTask"):
+                            target_task = predecessor.getSourceTask()
+
+                        if target_task and target_task.getUniqueID():
+                            dependencies.append({
+                                "predecessor_external_id": str(target_task.getUniqueID()),
+                                "predecessor_id": str(target_task.getID()) if target_task.getID() else None,
+                                "predecessor_name": str(target_task.getName()) if target_task.getName() else None,
+                                "successor_external_id": task_external_id,
+                                "successor_id": task_data["id"],
+                                "successor_name": task_data["name"],
+                                "type": str(predecessor.getType()) if hasattr(predecessor, "getType") and predecessor.getType() else None,
+                                "lag": self._convert_duration(predecessor.getLag() if hasattr(predecessor, "getLag") else None),
+                            })
+            except Exception:
+                pass
+            
+            # Extrai task baselines no mesmo loop
+            if TaskField and baseline_indices and hasattr(task, "get"):
+                for baseline_idx in baseline_indices:
+                    fields = baseline_fields_by_idx.get(baseline_idx)
+                    if not fields or not fields.get("start"):
+                        continue
+                    
+                    try:
+                        start_val = task.get(fields["start"])
+                        finish_val = task.get(fields["finish"]) if fields.get("finish") else None
+                        duration_val = task.get(fields["duration"]) if fields.get("duration") else None
+                        work_val = task.get(fields["work"]) if fields.get("work") else None
+                        cost_val = task.get(fields["cost"]) if fields.get("cost") else None
+                        
+                        if start_val or finish_val or duration_val or work_val or cost_val:
+                            task_baselines.append({
+                                "task_external_id": task_external_id,
+                                "baseline_index": baseline_idx,
+                                "start_date": self._convert_date(start_val),
+                                "finish_date": self._convert_date(finish_val),
+                                "duration": self._convert_duration(duration_val),
+                                "work": self._convert_duration(work_val),
+                                "cost": self._convert_cost(cost_val),
+                            })
+                    except Exception:
+                        continue
+
+        return tasks, dependencies, task_baselines
+
+    def extract_resources_bundle(
+        self,
+        resource_custom_fields: Optional[List[Any]] = None,
+        baseline_indices: Optional[List[int]] = None,
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """Extrai resources e resource baselines em um único loop (otimização).
+        
+        Args:
+            resource_custom_fields: Lista opcional de CustomField objects para resources
+            baseline_indices: Lista de índices de baseline a extrair (None = não extrair)
+        
+        Returns:
+            Tuple com (resources, resource_baselines)
+        """
+        if not self.project:
+            self.read()
+
+        resources: List[Dict[str, Any]] = []
+        resource_baselines: List[Dict[str, Any]] = []
+        
+        ResourceField = None
+        if baseline_indices:
+            try:
+                ResourceField = _get_java_class("ResourceField")
+            except Exception:
+                pass
+        
+        # Pre-computa campos baseline por índice
+        baseline_fields_by_idx: Dict[int, Dict[str, Any]] = {}
+        if ResourceField and baseline_indices:
+            for idx in baseline_indices:
+                if idx == 0:
+                    baseline_fields_by_idx[idx] = {
+                        "work": ResourceField.BASELINE_WORK,
+                        "cost": ResourceField.BASELINE_COST,
+                    }
+                else:
+                    baseline_fields_by_idx[idx] = {
+                        "work": getattr(ResourceField, f"BASELINE{idx}_WORK", None),
+                        "cost": getattr(ResourceField, f"BASELINE{idx}_COST", None),
+                    }
+        
+        # Único loop sobre resources
+        for resource in self.project.getResources():
+            if resource is None:
+                continue
+
+            unique_id = resource.getUniqueID()
+            resource_external_id = str(unique_id) if unique_id else None
+            
+            if not resource_external_id:
+                continue
+            
+            # Extrai resource core
+            resource_data = {
+                "external_id": resource_external_id,
+                "id": str(resource.getID()) if resource.getID() else None,
+                "name": str(resource.getName()) if resource.getName() else None,
+                "email": str(resource.getEmailAddress()) if resource.getEmailAddress() else None,
+                "type": str(resource.getType()) if resource.getType() else None,
+                "group": str(resource.getGroup()) if resource.getGroup() else None,
+                "max_units": float(resource.getMaxUnits()) if resource.getMaxUnits() else None,
+                "standard_rate": self._convert_rate(resource.getStandardRate()),
+                "cost": self._convert_rate(resource.getCost()),
+                "notes": str(resource.getNotes()) if resource.getNotes() else None,
+                "custom_fields": {},
+            }
+
+            if resource_custom_fields:
+                resource_data["custom_fields"] = self._extract_custom_field_values(resource, resource_custom_fields)
+            
+            resources.append(resource_data)
+            
+            # Extrai resource baselines no mesmo loop
+            if ResourceField and baseline_indices and hasattr(resource, "get"):
+                for baseline_idx in baseline_indices:
+                    fields = baseline_fields_by_idx.get(baseline_idx)
+                    if not fields or not fields.get("work"):
+                        continue
+                    
+                    try:
+                        work_val = resource.get(fields["work"])
+                        cost_val = resource.get(fields["cost"]) if fields.get("cost") else None
+                        
+                        if work_val or cost_val:
+                            resource_baselines.append({
+                                "resource_external_id": resource_external_id,
+                                "baseline_index": baseline_idx,
+                                "work": self._convert_duration(work_val),
+                                "cost": self._convert_cost(cost_val),
+                            })
+                    except Exception:
+                        continue
+
+        return resources, resource_baselines
+
+    def get_resource_baselines(self, baseline_indices: List[int]) -> List[Dict[str, Any]]:
+        """Extrai valores de baseline para todos os resources.
+        
+        Args:
+            baseline_indices: Lista de índices de baseline a extrair (ex: [0, 1, 2])
+        
+        Returns:
+            Lista de dicts com resource_external_id, baseline_index e valores
+        """
+        if not self.project:
+            self.read()
+
+        resource_baselines = []
+        
+        try:
+            ResourceField = _get_java_class("ResourceField")
+        except Exception:
+            return resource_baselines
+        
+        for resource in self.project.getResources():
+            if resource is None:
+                continue
+            
+            resource_external_id = str(resource.getUniqueID()) if resource.getUniqueID() else None
+            if not resource_external_id:
+                continue
+            
+            for baseline_idx in baseline_indices:
+                try:
+                    # Determina campos baseado no índice
+                    if baseline_idx == 0:
+                        work_field = ResourceField.BASELINE_WORK
+                        cost_field = ResourceField.BASELINE_COST
+                    else:
+                        work_field = getattr(ResourceField, f"BASELINE{baseline_idx}_WORK", None)
+                        cost_field = getattr(ResourceField, f"BASELINE{baseline_idx}_COST", None)
+                    
+                    if not work_field:
+                        continue
+                    
+                    # Extrai valores usando get() genérico
+                    work_val = resource.get(work_field) if hasattr(resource, "get") else None
+                    cost_val = resource.get(cost_field) if cost_field and hasattr(resource, "get") else None
+                    
+                    # Só adiciona se houver pelo menos um valor
+                    if work_val or cost_val:
+                        resource_baselines.append({
+                            "resource_external_id": resource_external_id,
+                            "baseline_index": baseline_idx,
+                            "work": self._convert_duration(work_val),
+                            "cost": self._convert_cost(cost_val),
+                        })
+                except Exception:
+                    continue
+        
+        return resource_baselines
+
+    def _convert_datetime(self, datetime_obj) -> Optional[str]:
+        """Converte datetime Java para string ISO (timestamp completo).
+        
+        Reutiliza lógica de _convert_date mas garante que inclui hora.
+        """
+        return self._convert_date(datetime_obj)
+
+    def _convert_timephased_value(self, value_obj) -> Optional[float]:
+        """Converte valor timephased (work, cost, units) para float."""
+        if value_obj is None:
+            return None
+        try:
+            if hasattr(value_obj, "getDuration"):
+                return float(value_obj.getDuration())
+            if hasattr(value_obj, "getAmount"):
+                return float(value_obj.getAmount())
+            if hasattr(value_obj, "getValue"):
+                return float(value_obj.getValue())
+            return float(value_obj)
+        except Exception:
+            return None
+
+    def get_assignment_timephased(self) -> List[Dict[str, Any]]:
+        """Extrai dados timephased (planned e complete) de todos os assignments.
+        
+        Returns:
+            Lista de dicts com estrutura:
+            {
+                "assignment_external_id": "123",
+                "planned": [
+                    {"period_start": "...", "period_end": "...", "work": 8.0, "cost": 100.0, "units": 1.0},
+                    ...
+                ],
+                "complete": [
+                    {"period_start": "...", "period_end": "...", "work": 4.0, "cost": 60.0, "units": 1.0},
+                    ...
+                ]
+            }
+        """
+        if not self.project:
+            self.read()
+
+        timephased_data = []
+        negative_values_count = 0
+        
+        for assignment in self.project.getResourceAssignments():
+            if assignment is None:
+                continue
+            
+            # UniqueID do assignment
+            unique_id = assignment.getUniqueID() if hasattr(assignment, "getUniqueID") else None
+            assignment_external_id = str(unique_id) if unique_id else None
+            
+            if not assignment_external_id:
+                continue
+            
+            planned_periods = []
+            complete_periods = []
+            
+            # Extrai planned timephased data
+            try:
+                # Tenta diferentes métodos para planned work
+                planned_work = None
+                if hasattr(assignment, "getTimephasedWork"):
+                    planned_work = assignment.getTimephasedWork()
+                elif hasattr(assignment, "getTimephasedData"):
+                    planned_work = assignment.getTimephasedData()
+                
+                if planned_work:
+                    for period in planned_work:
+                        if period is None:
+                            continue
+                        try:
+                            period_start = None
+                            period_end = None
+                            work_val = None
+                            cost_val = None
+                            units_val = None
+                            
+                            if hasattr(period, "getStart"):
+                                period_start = self._convert_datetime(period.getStart())
+                            if hasattr(period, "getEnd"):
+                                period_end = self._convert_datetime(period.getEnd())
+                            if hasattr(period, "getAmount"):
+                                work_val = self._convert_timephased_value(period.getAmount())
+                            elif hasattr(period, "getWork"):
+                                work_val = self._convert_timephased_value(period.getWork())
+                            elif hasattr(period, "getValue"):
+                                work_val = self._convert_timephased_value(period.getValue())
+                            
+                            # Tenta extrair cost e units se disponíveis
+                            if hasattr(period, "getCost"):
+                                cost_val = self._convert_timephased_value(period.getCost())
+                            if hasattr(period, "getUnits"):
+                                units_val = self._convert_timephased_value(period.getUnits())
+                            
+                            # Detecta valores negativos (anômalos)
+                            if work_val is not None and work_val < 0:
+                                negative_values_count += 1
+                            if cost_val is not None and cost_val < 0:
+                                negative_values_count += 1
+                            
+                            if period_start and period_end:
+                                planned_periods.append({
+                                    "period_start": period_start,
+                                    "period_end": period_end,
+                                    "work": work_val,
+                                    "cost": cost_val,
+                                    "units": units_val,
+                                })
+                        except Exception:
+                            continue
+            except Exception:
+                pass
+            
+            # Extrai complete/actual timephased data
+            try:
+                # Tenta diferentes métodos para actual work
+                actual_work = None
+                if hasattr(assignment, "getTimephasedActualWork"):
+                    actual_work = assignment.getTimephasedActualWork()
+                elif hasattr(assignment, "getTimephasedActualData"):
+                    actual_work = assignment.getTimephasedActualData()
+                
+                if actual_work:
+                    for period in actual_work:
+                        if period is None:
+                            continue
+                        try:
+                            period_start = None
+                            period_end = None
+                            work_val = None
+                            cost_val = None
+                            units_val = None
+                            
+                            if hasattr(period, "getStart"):
+                                period_start = self._convert_datetime(period.getStart())
+                            if hasattr(period, "getEnd"):
+                                period_end = self._convert_datetime(period.getEnd())
+                            if hasattr(period, "getAmount"):
+                                work_val = self._convert_timephased_value(period.getAmount())
+                            elif hasattr(period, "getWork"):
+                                work_val = self._convert_timephased_value(period.getWork())
+                            elif hasattr(period, "getActualWork"):
+                                work_val = self._convert_timephased_value(period.getActualWork())
+                            elif hasattr(period, "getValue"):
+                                work_val = self._convert_timephased_value(period.getValue())
+                            
+                            # Tenta extrair cost e units se disponíveis
+                            if hasattr(period, "getCost"):
+                                cost_val = self._convert_timephased_value(period.getCost())
+                            elif hasattr(period, "getActualCost"):
+                                cost_val = self._convert_timephased_value(period.getActualCost())
+                            if hasattr(period, "getUnits"):
+                                units_val = self._convert_timephased_value(period.getUnits())
+                            
+                            # Detecta valores negativos (anômalos)
+                            if work_val is not None and work_val < 0:
+                                negative_values_count += 1
+                            if cost_val is not None and cost_val < 0:
+                                negative_values_count += 1
+                            
+                            if period_start and period_end:
+                                complete_periods.append({
+                                    "period_start": period_start,
+                                    "period_end": period_end,
+                                    "work": work_val,
+                                    "cost": cost_val,
+                                    "units": units_val,
+                                })
+                        except Exception:
+                            continue
+            except Exception:
+                pass
+            
+            # Só adiciona se houver pelo menos um período
+            if planned_periods or complete_periods:
+                timephased_data.append({
+                    "assignment_external_id": assignment_external_id,
+                    "planned": planned_periods,
+                    "complete": complete_periods,
+                })
+        
+        # Retorna também contagem de valores negativos para telemetria
+        return timephased_data, negative_values_count
+
 
 def read_mpp(mpp_path: str, include_custom_fields: bool = True) -> Dict[str, Any]:
     """Convenience: retorna todos os blocos necessários para importação.

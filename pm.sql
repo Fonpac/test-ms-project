@@ -605,6 +605,31 @@ ALTER TABLE pm.client_user_group_access_project OWNER TO alpha;
 GRANT ALL ON TABLE pm.client_user_group_access_project TO alpha;
 GRANT SELECT, DELETE, INSERT, UPDATE ON TABLE pm.client_user_group_access_project TO usage_on_tables;
 
+-- pm.virtual_site_project definition
+-- Drop table
+-- DROP TABLE pm.virtual_site_project;
+CREATE TABLE pm.virtual_site_project (
+    id int4 GENERATED ALWAYS AS IDENTITY(
+        INCREMENT BY 1 MINVALUE 1 MAXVALUE 2147483647 START 1 CACHE 1 NO CYCLE
+    ) NOT NULL,
+    virtual_site_id int4 NOT NULL,
+    project_id int4 NOT NULL,
+    created_at timestamp DEFAULT now() NOT NULL,
+    created_by int4 NOT NULL,
+    deleted_at timestamp NULL,
+    deleted_by int4 NULL,
+    CONSTRAINT virtual_site_project_pk PRIMARY KEY (id),
+    CONSTRAINT virtual_site_project_project_id_fk FOREIGN KEY (project_id) REFERENCES pm.project(id)
+);
+CREATE INDEX virtual_site_project_project_id_index ON pm.virtual_site_project USING btree (project_id);
+CREATE INDEX virtual_site_project_virtual_site_id_index ON pm.virtual_site_project USING btree (virtual_site_id);
+CREATE UNIQUE INDEX virtual_site_project_unique_active ON pm.virtual_site_project USING btree (project_id, virtual_site_id)
+WHERE (deleted_at IS NULL);
+-- Permissions
+ALTER TABLE pm.virtual_site_project OWNER TO alpha;
+GRANT ALL ON TABLE pm.virtual_site_project TO alpha;
+GRANT SELECT, DELETE, INSERT, UPDATE ON TABLE pm.virtual_site_project TO usage_on_tables;
+
 -- Permissions
 GRANT ALL ON SCHEMA pm TO alpha;
 GRANT USAGE ON SCHEMA pm TO usage_on_tables;

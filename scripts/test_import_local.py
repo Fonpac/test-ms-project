@@ -22,9 +22,6 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
-# Diretório para salvar relatórios de importação
-REPORTS_DIR = REPO_ROOT / "import_reports"
-
 try:
     from dotenv import load_dotenv
 except ImportError:  # pragma: no cover
@@ -69,7 +66,6 @@ def main() -> int:
         for mpp_file in mpp_files:
             print(f"  - {mpp_file}")
 
-    print(f"\nRelatórios serão salvos em: {REPORTS_DIR}")
     print("\nIniciando importação...\n")
     
     reports: list[ImportReport] = []
@@ -78,7 +74,6 @@ def main() -> int:
         try:
             report = importer.import_project(
                 str(mpp_file),
-                report_dir=str(REPORTS_DIR),
             )
             reports.append(report)
         except Exception as e:
@@ -114,7 +109,7 @@ def main() -> int:
     
     print("=" * 70)
     print(f"Total: {len(reports)} | Sucesso: {success_count} | Falha: {len(reports) - success_count}")
-    print(f"Relatórios detalhados em: {REPORTS_DIR}")
+    print("Relatórios salvos no banco de dados (tabela pm.import_log)")
     print("=" * 70)
 
     return 0 if success_count == len(reports) else 1

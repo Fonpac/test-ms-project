@@ -6,7 +6,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .db import DBConfig, parse_iso_datetime
 from .mpp import MPPReader
@@ -264,7 +264,6 @@ class MPPImporter:
         source_file: Optional[str] = None,
         file_storage_path: Optional[str] = None,
         file_hash: Optional[str] = None,
-        report_dir: Optional[str] = None,
     ) -> ImportReport:
         """Importa um arquivo .mpp para o banco de dados.
         
@@ -273,7 +272,6 @@ class MPPImporter:
             source_file: Nome do arquivo original (para log)
             file_storage_path: Caminho onde o arquivo foi armazenado (ex: S3)
             file_hash: Hash SHA256 do arquivo (para detectar duplicatas)
-            report_dir: Diretório para salvar o relatório (None = não salva)
         
         Returns:
             ImportReport com todos os detalhes da importação
@@ -403,15 +401,60 @@ class MPPImporter:
                             )
                         report.custom_field_definitions = custom_field_count
 
-                        # Fase 7: Registra log de importação
+                        # Fase 7: Extração de calendários
+                        with Timer("extract_calendars", timings):
+                            calendars_data = reader.get_calendars()
+                        
+                        # Fase 8: Import calendários
+                        with Timer("import_calendars", timings):
+                            calendar_count = self._import_calendars(
+                                cur, project_id, calendars_data
+                            )
+                        report.calendars = calendar_count
+
+                        # Fase 9: Extração de resources
+                        with Timer("extract_resources", timings):
+                            _, fields_by_class = reader.get_custom_field_definitions()
+                            resources_data = reader.get_resources(
+                                resource_custom_fields=fields_by_class.get("RESOURCE", [])
+                            )
+                        
+                        # Fase 10: Import resources
+                        with Timer("import_resources", timings):
+                            resource_count, resource_id_map = self._import_resources(
+                                cur, project_id, resources_data
+                            )
+                        report.resources = resource_count
+
+                        # Fase 11: Extração de tasks
+                        with Timer("extract_tasks", timings):
+                            tasks_data = reader.get_tasks(
+                                task_custom_fields=fields_by_class.get("TASK", [])
+                            )
+                        
+                        # Fase 12: Import tasks
+                        with Timer("import_tasks", timings):
+                            task_count, task_id_map = self._import_tasks(
+                                cur, project_id, tasks_data
+                            )
+                        report.tasks = task_count
+
+                        # Calcula tempo total antes de salvar no log
+                        total_elapsed = time.perf_counter() - total_start
+                        timings["total"] = round(total_elapsed * 1000, 2)
+                        report.timings_ms = timings
+
+                        # Fase 13: Registra log de importação
                         with Timer("create_import_log", timings):
                             cur.execute(
                                 """
                                 INSERT INTO pm.import_log (
                                     project_id, source_file, file_storage_path, file_hash,
-                                    stats, status, created_by
+                                    custom_field_definitions, tasks, resources, assignments,
+                                    calendars, dependencies, total_time_ms, timings_ms,
+                                    status, error_message, stats, created_by
                                 ) VALUES (
-                                    %s, %s, %s, %s, %s, %s, %s
+                                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                                 ) RETURNING id
                                 """,
                                 (
@@ -419,8 +462,21 @@ class MPPImporter:
                                     report.source_file,
                                     file_storage_path,
                                     file_hash,
-                                    json.dumps(report.to_dict()),
+                                    report.custom_field_definitions,
+                                    report.tasks,
+                                    report.resources,
+                                    report.assignments,
+                                    report.calendars,
+                                    report.dependencies,
+                                    timings.get("total"),
+                                    json.dumps(timings),
                                     "completed",
+                                    None,
+                                    json.dumps({
+                                        "project_action": report.project_action,
+                                        "project_name": report.project_name,
+                                        "project_external_id": report.project_external_id,
+                                    }),
                                     self.created_by,
                                 ),
                             )
@@ -433,18 +489,67 @@ class MPPImporter:
         except Exception as e:
             report.success = False
             report.error_message = str(e)
+            
+            # Tenta salvar o erro no banco
+            try:
+                # Calcula tempo até o erro
+                total_elapsed = time.perf_counter() - total_start
+                timings["total"] = round(total_elapsed * 1000, 2)
+                report.timings_ms = timings
+                
+                # Conecta novamente para salvar o erro
+                conn = self._connect()
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            INSERT INTO pm.import_log (
+                                project_id, source_file, file_storage_path, file_hash,
+                                custom_field_definitions, tasks, resources, assignments,
+                                calendars, dependencies, total_time_ms, timings_ms,
+                                status, error_message, stats, created_by
+                            ) VALUES (
+                                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                            ) RETURNING id
+                            """,
+                            (
+                                report.project_id,
+                                report.source_file,
+                                report.file_storage_path,
+                                report.file_hash,
+                                report.custom_field_definitions,
+                                report.tasks,
+                                report.resources,
+                                report.assignments,
+                                report.calendars,
+                                report.dependencies,
+                                timings.get("total"),
+                                json.dumps(timings),
+                                "failed",
+                                str(e),
+                                json.dumps({
+                                    "project_action": report.project_action,
+                                    "project_name": report.project_name,
+                                    "project_external_id": report.project_external_id,
+                                }),
+                                self.created_by,
+                            ),
+                        )
+                        report.import_log_id = cur.fetchone()[0]
+                finally:
+                    conn.close()
+            except Exception as db_error:
+                # Se falhar ao salvar no banco, apenas loga
+                print(f"Erro ao salvar log de importação no banco: {db_error}")
+            
             raise
 
         finally:
-            # Calcula tempo total
-            total_elapsed = time.perf_counter() - total_start
-            timings["total"] = round(total_elapsed * 1000, 2)
-            report.timings_ms = timings
-            
-            # Salva relatório em arquivo se diretório foi especificado
-            if report_dir:
-                report_path = report.save_to_file(report_dir)
-                print(f"Relatório salvo em: {report_path}")
+            # Atualiza timings no report se ainda não foi calculado (caso de erro)
+            if "total" not in report.timings_ms:
+                total_elapsed = time.perf_counter() - total_start
+                timings["total"] = round(total_elapsed * 1000, 2)
+                report.timings_ms = timings
             
             # Imprime resumo curto
             report.print_summary()
@@ -503,3 +608,332 @@ class MPPImporter:
             count += 1
 
         return count
+
+    def _import_calendars(
+        self,
+        cur,
+        project_id: int,
+        calendars: List[Dict[str, Any]],
+    ) -> int:
+        """Importa calendários do projeto.
+        
+        Os calendários são importados em duas passadas:
+        1. Primeiro insere todos os calendários (sem parent)
+        2. Depois atualiza os parent_calendar_id
+        
+        Returns:
+            Número de calendários importados/atualizados.
+        """
+        if not calendars:
+            return 0
+
+        # Mapa de external_id -> calendar_id (do banco)
+        external_to_db_id: Dict[str, int] = {}
+        
+        # Primeira passada: UPSERT de todos os calendários
+        for cal in calendars:
+            external_id = cal.get("external_id")
+            name = cal.get("name")
+            
+            if not name:
+                continue
+            
+            # UPSERT do calendário
+            cur.execute(
+                """
+                INSERT INTO pm.calendar (
+                    project_id, external_id, name, created_by
+                ) VALUES (
+                    %s, %s, %s, %s
+                )
+                ON CONFLICT (project_id, external_id)
+                WHERE deleted_at IS NULL AND external_id IS NOT NULL
+                DO UPDATE SET
+                    name = EXCLUDED.name,
+                    updated_by = EXCLUDED.created_by,
+                    updated_at = CURRENT_TIMESTAMP
+                RETURNING id
+                """,
+                (project_id, external_id, name, self.created_by),
+            )
+            row = cur.fetchone()
+            calendar_id = row[0] if row else None
+            
+            if calendar_id and external_id:
+                external_to_db_id[external_id] = calendar_id
+
+        # Segunda passada: atualiza parent_calendar_id
+        for cal in calendars:
+            external_id = cal.get("external_id")
+            parent_external_id = cal.get("parent_external_id")
+            
+            if not external_id or not parent_external_id:
+                continue
+            
+            calendar_id = external_to_db_id.get(external_id)
+            parent_id = external_to_db_id.get(parent_external_id)
+            
+            if calendar_id and parent_id:
+                cur.execute(
+                    """
+                    UPDATE pm.calendar SET
+                        parent_calendar_id = %s,
+                        updated_by = %s,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = %s
+                    """,
+                    (parent_id, self.created_by, calendar_id),
+                )
+
+        # Terceira passada: importa weekdays, working_times e exceptions
+        for cal in calendars:
+            external_id = cal.get("external_id")
+            if not external_id:
+                continue
+            
+            calendar_id = external_to_db_id.get(external_id)
+            if not calendar_id:
+                continue
+            
+            # Importa dias da semana
+            for weekday in cal.get("weekdays", []):
+                cur.execute(
+                    """
+                    INSERT INTO pm.calendar_weekday (
+                        calendar_id, day_of_week, working, created_by
+                    ) VALUES (
+                        %s, %s, %s, %s
+                    )
+                    ON CONFLICT (calendar_id, day_of_week)
+                    WHERE deleted_at IS NULL
+                    DO UPDATE SET
+                        working = EXCLUDED.working,
+                        updated_by = EXCLUDED.created_by,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (
+                        calendar_id,
+                        weekday.get("day_of_week"),
+                        weekday.get("working", False),
+                        self.created_by,
+                    ),
+                )
+            
+            # Limpa working times antigos e insere novos
+            cur.execute(
+                """
+                UPDATE pm.calendar_working_time SET
+                    deleted_at = CURRENT_TIMESTAMP,
+                    deleted_by = %s
+                WHERE calendar_id = %s AND deleted_at IS NULL
+                """,
+                (self.created_by, calendar_id),
+            )
+            
+            for wt in cal.get("working_times", []):
+                if wt.get("start_time") and wt.get("end_time"):
+                    cur.execute(
+                        """
+                        INSERT INTO pm.calendar_working_time (
+                            calendar_id, day_of_week, start_time, end_time, created_by
+                        ) VALUES (
+                            %s, %s, %s, %s, %s
+                        )
+                        """,
+                        (
+                            calendar_id,
+                            wt.get("day_of_week"),
+                            wt.get("start_time"),
+                            wt.get("end_time"),
+                            self.created_by,
+                        ),
+                    )
+            
+            # Importa exceções
+            for exc in cal.get("exceptions", []):
+                from_date = exc.get("from_date")
+                if not from_date:
+                    continue
+                
+                # Por simplicidade, usa apenas from_date como exception_date
+                # Para ranges de data, seria necessário expandir
+                cur.execute(
+                    """
+                    INSERT INTO pm.calendar_exception (
+                        calendar_id, exception_date, working, created_by
+                    ) VALUES (
+                        %s, %s, %s, %s
+                    )
+                    ON CONFLICT (calendar_id, exception_date)
+                    WHERE deleted_at IS NULL
+                    DO UPDATE SET
+                        working = EXCLUDED.working,
+                        updated_by = EXCLUDED.created_by,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (
+                        calendar_id,
+                        from_date,
+                        exc.get("working", False),
+                        self.created_by,
+                    ),
+                )
+
+        return len(external_to_db_id)
+
+    def _import_resources(
+        self,
+        cur,
+        project_id: int,
+        resources: List[Dict[str, Any]],
+    ) -> Tuple[int, Dict[str, int]]:
+        """Importa recursos do projeto.
+        
+        Returns:
+            Tuple com:
+            - Número de recursos importados/atualizados
+            - Mapa de external_id -> resource_id (do banco)
+        """
+        if not resources:
+            return 0, {}
+
+        external_to_db_id: Dict[str, int] = {}
+        
+        for res in resources:
+            external_id = res.get("external_id")
+            name = res.get("name")
+            
+            # Resources sem nome são ignorados (ex: "Unassigned")
+            if not name:
+                continue
+            
+            # UPSERT do resource
+            cur.execute(
+                """
+                INSERT INTO pm.resource (
+                    project_id, external_id, name, email, type, "group",
+                    max_units, standard_rate, cost, notes, custom_fields, created_by
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                )
+                ON CONFLICT (project_id, external_id)
+                WHERE deleted_at IS NULL AND external_id IS NOT NULL
+                DO UPDATE SET
+                    name = EXCLUDED.name,
+                    email = EXCLUDED.email,
+                    type = EXCLUDED.type,
+                    "group" = EXCLUDED."group",
+                    max_units = EXCLUDED.max_units,
+                    standard_rate = EXCLUDED.standard_rate,
+                    cost = EXCLUDED.cost,
+                    notes = EXCLUDED.notes,
+                    custom_fields = EXCLUDED.custom_fields,
+                    updated_by = EXCLUDED.created_by,
+                    updated_at = CURRENT_TIMESTAMP
+                RETURNING id
+                """,
+                (
+                    project_id,
+                    external_id,
+                    name,
+                    res.get("email"),
+                    res.get("type"),
+                    res.get("group"),
+                    res.get("max_units"),
+                    res.get("standard_rate"),
+                    res.get("cost"),
+                    res.get("notes"),
+                    json.dumps(res.get("custom_fields", {})),
+                    self.created_by,
+                ),
+            )
+            row = cur.fetchone()
+            resource_id = row[0] if row else None
+            
+            if resource_id and external_id:
+                external_to_db_id[external_id] = resource_id
+
+        return len(external_to_db_id), external_to_db_id
+
+    def _import_tasks(
+        self,
+        cur,
+        project_id: int,
+        tasks: List[Dict[str, Any]],
+    ) -> Tuple[int, Dict[str, int]]:
+        """Importa tarefas do projeto.
+        
+        Returns:
+            Tuple com:
+            - Número de tarefas importadas/atualizadas
+            - Mapa de external_id -> task_id (do banco)
+        """
+        if not tasks:
+            return 0, {}
+
+        external_to_db_id: Dict[str, int] = {}
+        
+        for task in tasks:
+            external_id = task.get("external_id")
+            name = task.get("name")
+            
+            # Tasks sem nome são ignoradas
+            if not name:
+                continue
+            
+            # UPSERT da task
+            cur.execute(
+                """
+                INSERT INTO pm.task (
+                    project_id, external_id, name, start_date, finish_date,
+                    duration, work, percent_complete, priority, notes, wbs,
+                    outline_level, milestone, summary, custom_fields, created_by
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                )
+                ON CONFLICT (project_id, external_id)
+                WHERE deleted_at IS NULL AND external_id IS NOT NULL
+                DO UPDATE SET
+                    name = EXCLUDED.name,
+                    start_date = EXCLUDED.start_date,
+                    finish_date = EXCLUDED.finish_date,
+                    duration = EXCLUDED.duration,
+                    work = EXCLUDED.work,
+                    percent_complete = EXCLUDED.percent_complete,
+                    priority = EXCLUDED.priority,
+                    notes = EXCLUDED.notes,
+                    wbs = EXCLUDED.wbs,
+                    outline_level = EXCLUDED.outline_level,
+                    milestone = EXCLUDED.milestone,
+                    summary = EXCLUDED.summary,
+                    custom_fields = EXCLUDED.custom_fields,
+                    updated_by = EXCLUDED.created_by,
+                    updated_at = CURRENT_TIMESTAMP
+                RETURNING id
+                """,
+                (
+                    project_id,
+                    external_id,
+                    name,
+                    parse_iso_datetime(task.get("start")),
+                    parse_iso_datetime(task.get("finish")),
+                    task.get("duration"),
+                    task.get("work"),
+                    task.get("percent_complete", 0),
+                    task.get("priority"),
+                    task.get("notes"),
+                    task.get("wbs"),
+                    task.get("outline_level", 0),
+                    task.get("milestone", False),
+                    task.get("summary", False),
+                    json.dumps(task.get("custom_fields", {})),
+                    self.created_by,
+                ),
+            )
+            row = cur.fetchone()
+            task_id = row[0] if row else None
+            
+            if task_id and external_id:
+                external_to_db_id[external_id] = task_id
+
+        return len(external_to_db_id), external_to_db_id

@@ -332,8 +332,17 @@ class MPPReader:
         return dependencies
 
     def get_calendars(self) -> List[Dict[str, Any]]:
+        """Extrai calendários do projeto com dias da semana, horários e exceções."""
         if not self.project:
             self.read()
+
+        # Importa Day enum do MPXJ
+        try:
+            from jpype import JClass
+            Day = JClass("net.sf.mpxj.Day")
+            day_values = list(Day.values())
+        except Exception:
+            day_values = []
 
         calendars: List[Dict[str, Any]] = []
         for calendar in self.project.getCalendars():
@@ -352,18 +361,124 @@ class MPPReader:
                 if hasattr(parent, "getUniqueID"):
                     parent_external_id = parent.getUniqueID()
 
-            calendars.append(
-                {
-                    "external_id": str(unique_id) if unique_id else None,
-                    "name": str(calendar.getName()) if hasattr(calendar, "getName") and calendar.getName() else None,
-                    "parent_external_id": str(parent_external_id) if parent_external_id else None,
-                    "parent_name": str(parent.getName())
-                    if parent and hasattr(parent, "getName") and parent.getName()
-                    else None,
-                }
-            )
+            # Extrai dias da semana e horários de trabalho
+            weekdays = []
+            working_times = []
+            
+            for day in day_values:
+                try:
+                    day_name = str(day)
+                    # Converte Day enum para número (1=Sunday, 2=Monday, etc.)
+                    day_number = self._day_to_number(day_name)
+                    if day_number is None:
+                        continue
+                    
+                    # Verifica se é dia de trabalho
+                    is_working = False
+                    if hasattr(calendar, "isWorkingDay"):
+                        is_working = bool(calendar.isWorkingDay(day))
+                    
+                    weekdays.append({
+                        "day_of_week": day_number,
+                        "working": is_working,
+                    })
+                    
+                    # Obtém horários de trabalho para este dia
+                    if is_working and hasattr(calendar, "getCalendarHours"):
+                        hours = calendar.getCalendarHours(day)
+                        if hours:
+                            for time_range in hours:
+                                if time_range is None:
+                                    continue
+                                start = time_range.getStart() if hasattr(time_range, "getStart") else None
+                                end = time_range.getEnd() if hasattr(time_range, "getEnd") else None
+                                
+                                if start and end:
+                                    working_times.append({
+                                        "day_of_week": day_number,
+                                        "start_time": self._convert_time(start),
+                                        "end_time": self._convert_time(end),
+                                    })
+                except Exception:
+                    continue
+
+            # Extrai exceções do calendário (feriados, dias especiais)
+            exceptions = []
+            if hasattr(calendar, "getCalendarExceptions"):
+                for exc in calendar.getCalendarExceptions():
+                    if exc is None:
+                        continue
+                    try:
+                        from_date = exc.getFromDate() if hasattr(exc, "getFromDate") else None
+                        to_date = exc.getToDate() if hasattr(exc, "getToDate") else None
+                        is_working = bool(exc.getWorking()) if hasattr(exc, "getWorking") else False
+                        
+                        # Para exceções de múltiplos dias, cria uma entrada para cada
+                        if from_date:
+                            from_date_str = self._convert_date(from_date)
+                            to_date_str = self._convert_date(to_date) if to_date else from_date_str
+                            
+                            # Horários de trabalho da exceção (se houver)
+                            exc_times = []
+                            if is_working and hasattr(exc, "getCalendarHours"):
+                                for time_range in exc.getCalendarHours():
+                                    if time_range:
+                                        start = time_range.getStart() if hasattr(time_range, "getStart") else None
+                                        end = time_range.getEnd() if hasattr(time_range, "getEnd") else None
+                                        if start and end:
+                                            exc_times.append({
+                                                "start_time": self._convert_time(start),
+                                                "end_time": self._convert_time(end),
+                                            })
+                            
+                            exceptions.append({
+                                "from_date": from_date_str,
+                                "to_date": to_date_str,
+                                "working": is_working,
+                                "times": exc_times,
+                            })
+                    except Exception:
+                        continue
+
+            calendars.append({
+                "external_id": str(unique_id) if unique_id else None,
+                "name": str(calendar.getName()) if hasattr(calendar, "getName") and calendar.getName() else None,
+                "parent_external_id": str(parent_external_id) if parent_external_id else None,
+                "weekdays": weekdays,
+                "working_times": working_times,
+                "exceptions": exceptions,
+            })
 
         return calendars
+
+    def _day_to_number(self, day_name: str) -> Optional[int]:
+        """Converte nome do dia para número (0=Sunday, 1=Monday, etc.)."""
+        day_map = {
+            "SUNDAY": 0,
+            "MONDAY": 1,
+            "TUESDAY": 2,
+            "WEDNESDAY": 3,
+            "THURSDAY": 4,
+            "FRIDAY": 5,
+            "SATURDAY": 6,
+        }
+        return day_map.get(day_name.upper())
+
+    def _convert_time(self, java_time) -> Optional[str]:
+        """Converte tempo Java para string HH:MM:SS."""
+        if java_time is None:
+            return None
+        try:
+            # Tenta diferentes formatos de tempo do MPXJ
+            if hasattr(java_time, "toString"):
+                time_str = str(java_time.toString())
+                # Remove milissegundos se houver
+                if "." in time_str:
+                    time_str = time_str.split(".")[0]
+                return time_str
+            return str(java_time)
+        except Exception:
+            return None
 
     def get_custom_field_definitions(self) -> Tuple[List[Dict[str, Any]], Dict[str, List[Any]]]:
         """Retorna definições de campos customizados e cache por classe.

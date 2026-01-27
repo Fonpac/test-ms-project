@@ -47,9 +47,21 @@ CREATE TABLE pm.import_log (
     source_file varchar NOT NULL,
     file_storage_path varchar NULL,
     file_hash varchar NULL,
-    stats jsonb NULL,
+    -- Contagens de entidades importadas
+    custom_field_definitions int4 DEFAULT 0 NOT NULL,
+    tasks int4 DEFAULT 0 NOT NULL,
+    resources int4 DEFAULT 0 NOT NULL,
+    assignments int4 DEFAULT 0 NOT NULL,
+    calendars int4 DEFAULT 0 NOT NULL,
+    dependencies int4 DEFAULT 0 NOT NULL,
+    -- Timings (em milissegundos)
+    total_time_ms numeric(12, 2) NULL,
+    timings_ms jsonb NULL,
+    -- Status e erro
     status varchar DEFAULT 'completed' NOT NULL,
     error_message text NULL,
+    -- Stats adicionais (JSONB para flexibilidade)
+    stats jsonb NULL,
     created_at timestamp DEFAULT CURRENT_TIMESTAMP NOT NULL,
     created_by int4 NOT NULL,
     CONSTRAINT import_log_pk PRIMARY KEY (id),

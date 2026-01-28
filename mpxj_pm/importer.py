@@ -5,7 +5,7 @@ import os
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 from .db import DBConfig, parse_iso_datetime
@@ -828,22 +828,70 @@ class MPPImporter:
                         self.created_by,
                     ))
             
-            # Prepara exceptions
+            # Prepara exceptions (expandindo range de datas)
             for exc in cal.get("exceptions", []):
-                from_date = exc.get("from_date")
-                if from_date:
+                from_date_str = exc.get("from_date")
+                to_date_str = exc.get("to_date") or from_date_str
+                is_working = exc.get("working", False)
+                times = exc.get("times", [])
+                
+                if not from_date_str:
+                    continue
+                
+                # Pega o primeiro horário de trabalho da exceção (se houver)
+                start_time = None
+                end_time = None
+                if times and is_working:
+                    first_time = times[0]
+                    start_time = first_time.get("start_time")
+                    end_time = first_time.get("end_time")
+                
+                # Expande range de datas (from_date até to_date)
+                try:
+                    from_date = datetime.strptime(from_date_str[:10], "%Y-%m-%d").date()
+                    to_date = datetime.strptime(to_date_str[:10], "%Y-%m-%d").date()
+                    
+                    current_date = from_date
+                    while current_date <= to_date:
+                        exception_rows.append((
+                            calendar_id,
+                            current_date.isoformat(),
+                            is_working,
+                            start_time,
+                            end_time,
+                            self.created_by,
+                        ))
+                        current_date += timedelta(days=1)
+                except (ValueError, TypeError):
+                    # Fallback: só insere from_date
                     exception_rows.append((
                         calendar_id,
-                        from_date,
-                        exc.get("working", False),
+                        from_date_str,
+                        is_working,
+                        start_time,
+                        end_time,
                         self.created_by,
                     ))
         
-        # Delete em massa de working_times antigos
+        # Delete em massa de dados antigos (weekdays, working_times, exceptions)
         if calendar_ids_for_delete:
             cur.execute(
                 """
+                DELETE FROM pm.calendar_weekday
+                WHERE calendar_id = ANY(%s) AND deleted_at IS NULL
+                """,
+                (calendar_ids_for_delete,),
+            )
+            cur.execute(
+                """
                 DELETE FROM pm.calendar_working_time
+                WHERE calendar_id = ANY(%s) AND deleted_at IS NULL
+                """,
+                (calendar_ids_for_delete,),
+            )
+            cur.execute(
+                """
+                DELETE FROM pm.calendar_exception
                 WHERE calendar_id = ANY(%s) AND deleted_at IS NULL
                 """,
                 (calendar_ids_for_delete,),
@@ -858,12 +906,6 @@ class MPPImporter:
                 ) VALUES (
                     %s, %s, %s, %s
                 )
-                ON CONFLICT (calendar_id, day_of_week)
-                WHERE deleted_at IS NULL
-                DO UPDATE SET
-                    working = EXCLUDED.working,
-                    updated_by = EXCLUDED.created_by,
-                    updated_at = CURRENT_TIMESTAMP
                 """,
                 weekday_rows,
             )
@@ -886,16 +928,10 @@ class MPPImporter:
             cur.executemany(
                 """
                 INSERT INTO pm.calendar_exception (
-                    calendar_id, exception_date, working, created_by
+                    calendar_id, exception_date, working, start_time, end_time, created_by
                 ) VALUES (
-                    %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s
                 )
-                ON CONFLICT (calendar_id, exception_date)
-                WHERE deleted_at IS NULL
-                DO UPDATE SET
-                    working = EXCLUDED.working,
-                    updated_by = EXCLUDED.created_by,
-                    updated_at = CURRENT_TIMESTAMP
                 """,
                 exception_rows,
             )

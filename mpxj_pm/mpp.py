@@ -336,13 +336,31 @@ class MPPReader:
         if not self.project:
             self.read()
 
-        # Importa Day enum do MPXJ
+        # Importa DayOfWeek do Java (MPXJ 12+ usa java.time.DayOfWeek)
+        from jpype import JClass
+        day_values = []
+        
+        # Tenta java.time.DayOfWeek primeiro (MPXJ 12+)
         try:
-            from jpype import JClass
-            Day = JClass("net.sf.mpxj.Day")
-            day_values = list(Day.values())
+            DayOfWeek = JClass("java.time.DayOfWeek")
+            day_values = list(DayOfWeek.values())
         except Exception:
-            day_values = []
+            pass
+        
+        # Fallback para Day enum do MPXJ (versões mais antigas)
+        if not day_values:
+            try:
+                Day = JClass("org.mpxj.Day")
+                day_values = list(Day.values())
+            except Exception:
+                pass
+        
+        if not day_values:
+            try:
+                Day = JClass("net.sf.mpxj.Day")
+                day_values = list(Day.values())
+            except Exception:
+                pass
 
         calendars: List[Dict[str, Any]] = []
         for calendar in self.project.getCalendars():
@@ -368,7 +386,7 @@ class MPPReader:
             for day in day_values:
                 try:
                     day_name = str(day)
-                    # Converte Day enum para número (1=Sunday, 2=Monday, etc.)
+                    # Converte nome do dia para número
                     day_number = self._day_to_number(day_name)
                     if day_number is None:
                         continue
@@ -452,7 +470,12 @@ class MPPReader:
         return calendars
 
     def _day_to_number(self, day_name: str) -> Optional[int]:
-        """Converte nome do dia para número (0=Sunday, 1=Monday, etc.)."""
+        """Converte nome do dia para número (0=Sunday, 1=Monday, ..., 6=Saturday).
+        
+        Suporta:
+        - java.time.DayOfWeek: MONDAY, TUESDAY, ..., SUNDAY
+        - MPXJ Day enum: SUNDAY, MONDAY, ..., SATURDAY
+        """
         day_map = {
             "SUNDAY": 0,
             "MONDAY": 1,

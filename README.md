@@ -1,12 +1,13 @@
 ## Importador MPP → PostgreSQL (pm)
 
-Este projeto roda em **ECS** consumindo mensagens de uma **fila SQS** e importando arquivos **Microsoft Project (.mpp)** para Postgres usando o schema/funções de `pm.sql`.
+API REST para upload e importação de arquivos **Microsoft Project (.mpp)** para PostgreSQL.
 
 ### Requisitos
 
 - **Java** (necessário para MPXJ/JPype)
 - **Python** + dependências (`requirements.txt`)
 - **PostgreSQL** com `pm.sql` aplicado
+- **AWS S3** para armazenamento dos arquivos
 
 ### Setup rápido (local)
 
@@ -18,9 +19,29 @@ pip install -r requirements.txt
 
 ### Variáveis via `.env`
 
-- Copie `.env.example` para `.env` e ajuste.
+- Copie `.env.template` para `.env` e ajuste.
 - Local/dev: o código carrega `.env` automaticamente (se existir).
-- ECS: normalmente você injeta variáveis via Task Definition/Secrets; o `.env` é só para testes.
+- ECS: normalmente você injeta variáveis via Task Definition/Secrets.
+
+**Variáveis obrigatórias:**
+
+| Variável | Descrição |
+|----------|-----------|
+| `PGHOST` | Host do PostgreSQL |
+| `PGPORT` | Porta do PostgreSQL (default: 5432) |
+| `PGDATABASE` | Nome do banco de dados |
+| `PGUSER` | Usuário do banco |
+| `PGPASSWORD` | Senha do banco |
+| `AWS_REGION` | Região AWS (ex: us-east-1) |
+| `S3_BUCKET` | Bucket S3 para armazenar arquivos .mpp |
+| `JWT_SECRET` | Secret para validar tokens JWT |
+
+**Variáveis opcionais:**
+
+| Variável | Default | Descrição |
+|----------|---------|-----------|
+| `API_HOST` | `0.0.0.0` | Host da API |
+| `API_PORT` | `8000` | Porta da API |
 
 ### Importar um arquivo local (teste)
 
@@ -29,51 +50,109 @@ python -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 
-cp .env.example .env
+cp .env.template .env
 # edite PGHOST/PGPORT/PGDATABASE/PGUSER/PGPASSWORD
 python scripts/test_import_local.py example.mpp
 ```
-### ECS + SQS Worker
 
-O entrypoint para ECS é `worker.py`:
+---
 
-- Faz long-poll no SQS
-- Importa no Postgres
-- Apaga a mensagem **apenas** se importar com sucesso
-- Se falhar, não apaga (para retry / DLQ)
+## API REST
 
-Rodar local (simulando ECS):
+### Iniciar a API
 
 ```bash
-cp .env.example .env
-# edite PGHOST/PGPORT/PGDATABASE/PGUSER/PGPASSWORD, AWS_REGION e SQS_QUEUE_URL
-python worker.py
+cp .env.template .env
+# Configure as variáveis (incluindo JWT_SECRET)
+
+python api.py
+# ou
+uvicorn api:app --host 0.0.0.0 --port 8000
 ```
 
-### Payload da mensagem (JSON)
+### Autenticação
 
-- Arquivo local:
+A API requer autenticação via **Bearer token JWT** (algoritmo HS256) em todos os endpoints (exceto health checks).
+
+O token JWT deve conter o `user_id` no campo `sub`:
 
 ```json
-{ "mpp_path": "/data/projetos/exemplo.mpp" }
+{
+  "sub": 123,
+  "exp": 1735689600
+}
 ```
 
-- Arquivo no S3:
+O `user_id` extraído do campo `sub` é usado como `created_by` e `updated_by` nas operações.
+
+### Endpoints
+
+| Método | Endpoint | Auth | Descrição |
+|--------|----------|------|-----------|
+| GET | `/health` | ❌ | Health check completo (DB + S3) |
+| GET | `/health/live` | ❌ | Liveness probe (API rodando) |
+| GET | `/health/ready` | ❌ | Readiness probe (DB + S3 disponíveis) |
+| POST | `/upload` | ✅ | Upload de arquivo .mpp → S3 + importação |
+
+### Criar Masterplan (Upload)
+
+```bash
+curl -X POST "http://localhost:8000/upload" \
+  -H "Authorization: Bearer SEU_TOKEN_JWT" \
+  -F "file=@projeto.mpp"
+```
+
+### Resposta
 
 ```json
-{ "s3_bucket": "meu-bucket", "s3_key": "imports/exemplo.mpp" }
+{
+  "success": true,
+  "masterplan_id": 1,
+  "masterplan_name": "Meu Masterplan",
+  "masterplan_action": "created",
+  "import_log_id": 42,
+  "s3_uri": "s3://meu-bucket/imports/1/20260128_120000_projeto.mpp",
+  "s3_bucket": "meu-bucket",
+  "s3_key": "imports/1/20260128_120000_projeto.mpp",
+  "file_hash": "a1b2c3d4e5f6...",
+  "filename": "projeto.mpp",
+  "size_bytes": 1234567,
+  "tasks": 150,
+  "resources": 20,
+  "assignments": 300,
+  "calendars": 3,
+  "dependencies": 100,
+  "total_time_seconds": 5.23
+}
 ```
 
-ou
+### Armazenamento e Histórico de Versões
 
-```json
-{ "s3_uri": "s3://meu-bucket/imports/exemplo.mpp" }
+O arquivo é salvo no S3 em `imports/{masterplan_id}/{timestamp}_{filename}`.
+
+Cada importação cria um registro na tabela `pm.import_log` contendo:
+- `file_storage_path`: URI do arquivo no S3
+- `file_hash`: Hash SHA256 do arquivo (para verificar integridade/duplicatas)
+- Contagens de entidades importadas (tasks, resources, etc.)
+- Timings de cada fase da importação
+
+Quando houver **updates futuros**, novas versões serão salvas no mesmo prefixo do S3 (`imports/{masterplan_id}/`), permitindo manter o histórico completo de todos os arquivos importados para aquele masterplan.
+
+### Documentação interativa
+
+Acesse `http://localhost:8000/docs` para a documentação Swagger/OpenAPI.
+
+---
+
+## Banco de Dados
+
+Rode `pm.sql` no PostgreSQL para criar o schema e tabelas:
+
+```bash
+psql -h localhost -U usuario -d banco -f pm.sql
 ```
 
-### Banco
-
-- Rode `pm.sql` no Postgres para criar o schema/tabelas/funções.
-
+---
 
 ## Docker
 
@@ -83,12 +162,14 @@ Build:
 docker build -t mpp-importer:latest .
 ```
 
-Run local (com `.env`):
+Run:
 
 ```bash
-docker run --rm --env-file .env mpp-importer:latest
+docker run --rm -p 8000:8000 --env-file .env mpp-importer:latest
 ```
 
-No ECS:
-- Use o `CMD` padrão (`python worker.py`) ou configure o Command/Entrypoint no Task Definition.
-- Passe `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`, `AWS_REGION`, `SQS_QUEUE_URL` via env/secrets.
+### No ECS
+
+- Configure: `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`, `AWS_REGION`, `S3_BUCKET`
+- Exponha a porta 8000 no ALB/Target Group
+- Use IAM roles para acesso ao S3

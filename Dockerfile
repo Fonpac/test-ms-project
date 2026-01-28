@@ -18,9 +18,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # App code
 COPY mpxj_pm ./mpxj_pm
-COPY worker.py ./worker.py
+COPY api.py ./
 COPY scripts ./scripts
-COPY pm.sql README.md .env.example ./
+COPY pm.sql README.md .env.template ./
 
-# Default: run SQS worker
-CMD ["python", "worker.py"]
+# Expose API port
+EXPOSE 8000
+
+# Run API
+CMD ["python", "api.py"]

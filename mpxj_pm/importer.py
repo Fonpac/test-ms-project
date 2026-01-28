@@ -17,24 +17,24 @@ class ImportReport:
     """Relatório detalhado de uma importação."""
     
     # Identificação
-    project_id: Optional[int] = None
+    masterplan_id: Optional[int] = None
     import_log_id: Optional[int] = None
     source_file: str = ""
     file_storage_path: Optional[str] = None
     file_hash: Optional[str] = None
     
     # Metadados do projeto
-    project_name: str = ""
-    project_external_id: str = ""
-    project_action: str = ""  # "created" ou "updated"
+    masterplan_name: str = ""
+    masterplan_external_id: str = ""
+    masterplan_action: str = ""  # "created" ou "updated"
     
     # Datas do projeto
-    project_start_date: Optional[str] = None
-    project_finish_date: Optional[str] = None
-    project_author: Optional[str] = None
-    project_company: Optional[str] = None
-    project_creation_date: Optional[str] = None
-    project_last_saved: Optional[str] = None
+    masterplan_start_date: Optional[str] = None
+    masterplan_finish_date: Optional[str] = None
+    masterplan_author: Optional[str] = None
+    masterplan_company: Optional[str] = None
+    masterplan_creation_date: Optional[str] = None
+    masterplan_last_saved: Optional[str] = None
     
     # Contagens
     custom_field_definitions: int = 0
@@ -62,7 +62,7 @@ class ImportReport:
         """Converte para dicionário."""
         return {
             "identification": {
-                "project_id": self.project_id,
+                "masterplan_id": self.masterplan_id,
                 "import_log_id": self.import_log_id,
                 "source_file": self.source_file,
                 "file_storage_path": self.file_storage_path,
@@ -70,15 +70,15 @@ class ImportReport:
                 "imported_at": self.imported_at,
             },
             "project": {
-                "name": self.project_name,
-                "external_id": self.project_external_id,
-                "action": self.project_action,
-                "start_date": self.project_start_date,
-                "finish_date": self.project_finish_date,
-                "author": self.project_author,
-                "company": self.project_company,
-                "creation_date": self.project_creation_date,
-                "last_saved": self.project_last_saved,
+                "name": self.masterplan_name,
+                "external_id": self.masterplan_external_id,
+                "action": self.masterplan_action,
+                "start_date": self.masterplan_start_date,
+                "finish_date": self.masterplan_finish_date,
+                "author": self.masterplan_author,
+                "company": self.masterplan_company,
+                "creation_date": self.masterplan_creation_date,
+                "last_saved": self.masterplan_last_saved,
             },
             "counts": {
                 "custom_field_definitions": self.custom_field_definitions,
@@ -121,22 +121,22 @@ class ImportReport:
         lines.append("-" * 70)
         lines.append("PROJETO")
         lines.append("-" * 70)
-        lines.append(f"  Nome:         {self.project_name}")
-        lines.append(f"  ID Interno:   {self.project_id}")
-        lines.append(f"  External ID:  {self.project_external_id}")
-        lines.append(f"  Ação:         {self.project_action}")
-        if self.project_author:
-            lines.append(f"  Autor:        {self.project_author}")
-        if self.project_company:
-            lines.append(f"  Empresa:      {self.project_company}")
-        if self.project_start_date:
-            lines.append(f"  Data Início:  {self.project_start_date}")
-        if self.project_finish_date:
-            lines.append(f"  Data Fim:     {self.project_finish_date}")
-        if self.project_creation_date:
-            lines.append(f"  Criado em:    {self.project_creation_date}")
-        if self.project_last_saved:
-            lines.append(f"  Último Save:  {self.project_last_saved}")
+        lines.append(f"  Nome:         {self.masterplan_name}")
+        lines.append(f"  ID Interno:   {self.masterplan_id}")
+        lines.append(f"  External ID:  {self.masterplan_external_id}")
+        lines.append(f"  Ação:         {self.masterplan_action}")
+        if self.masterplan_author:
+            lines.append(f"  Autor:        {self.masterplan_author}")
+        if self.masterplan_company:
+            lines.append(f"  Empresa:      {self.masterplan_company}")
+        if self.masterplan_start_date:
+            lines.append(f"  Data Início:  {self.masterplan_start_date}")
+        if self.masterplan_finish_date:
+            lines.append(f"  Data Fim:     {self.masterplan_finish_date}")
+        if self.masterplan_creation_date:
+            lines.append(f"  Criado em:    {self.masterplan_creation_date}")
+        if self.masterplan_last_saved:
+            lines.append(f"  Último Save:  {self.masterplan_last_saved}")
         lines.append("")
         
         # Contagens
@@ -198,7 +198,7 @@ class ImportReport:
         """
         # Cria nome do arquivo baseado no timestamp
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        safe_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in self.project_name)
+        safe_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in self.masterplan_name)
         filename = f"import_report_{safe_name}_{timestamp}.txt"
         
         filepath = os.path.join(output_dir, filename)
@@ -222,7 +222,7 @@ class ImportReport:
     def print_summary(self) -> None:
         """Imprime um resumo curto no terminal."""
         status = "OK" if self.success else "ERRO"
-        print(f"[{status}] {self.project_name} - {self.total_time_seconds():.2f}s")
+        print(f"[{status}] {self.masterplan_name} - {self.total_time_seconds():.2f}s")
 
 
 class Timer:
@@ -296,21 +296,21 @@ class MPPImporter:
             with Timer("extract_project_info", timings):
                 info = reader.get_project_info()
 
-            project_name = info.get("name") or os.path.basename(mpp_path)
-            project_external_id = info.get("id")
+            masterplan_name = info.get("name") or os.path.basename(mpp_path)
+            masterplan_external_id = info.get("id")
             
-            if not project_external_id:
-                project_external_id = str(uuid.uuid4())
+            if not masterplan_external_id:
+                masterplan_external_id = str(uuid.uuid4())
             
             # Preenche dados do projeto no relatório
-            report.project_name = project_name
-            report.project_external_id = project_external_id
-            report.project_start_date = info.get("start_date")
-            report.project_finish_date = info.get("finish_date")
-            report.project_author = info.get("author")
-            report.project_company = info.get("company")
-            report.project_creation_date = info.get("creation_date")
-            report.project_last_saved = info.get("last_saved")
+            report.masterplan_name = masterplan_name
+            report.masterplan_external_id = masterplan_external_id
+            report.masterplan_start_date = info.get("start_date")
+            report.masterplan_finish_date = info.get("finish_date")
+            report.masterplan_author = info.get("author")
+            report.masterplan_company = info.get("company")
+            report.masterplan_creation_date = info.get("creation_date")
+            report.masterplan_last_saved = info.get("last_saved")
 
             # Fase 3: Conexão com banco
             with Timer("db_connect", timings):
@@ -323,19 +323,19 @@ class MPPImporter:
                         with Timer("upsert_project", timings):
                             cur.execute(
                                 """
-                                SELECT id FROM pm.project
+                                SELECT id FROM pm.masterplan
                                 WHERE external_id = %s AND deleted_at IS NULL
                                 LIMIT 1
                                 """,
-                                (project_external_id,),
+                                (masterplan_external_id,),
                             )
                             row = cur.fetchone()
-                            project_id = row[0] if row else None
+                            masterplan_id = row[0] if row else None
                             
-                            if project_id:
+                            if masterplan_id:
                                 cur.execute(
                                     """
-                                    UPDATE pm.project SET
+                                    UPDATE pm.masterplan SET
                                         name = COALESCE(%s, name),
                                         start_date = COALESCE(%s, start_date),
                                         finish_date = COALESCE(%s, finish_date),
@@ -349,7 +349,7 @@ class MPPImporter:
                                     WHERE id = %s
                                     """,
                                     (
-                                        project_name,
+                                        masterplan_name,
                                         parse_iso_datetime(info.get("start_date")),
                                         parse_iso_datetime(info.get("finish_date")),
                                         info.get("author"),
@@ -358,14 +358,14 @@ class MPPImporter:
                                         parse_iso_datetime(info.get("creation_date")),
                                         parse_iso_datetime(info.get("last_saved")),
                                         self.created_by,
-                                        project_id,
+                                        masterplan_id,
                                     ),
                                 )
-                                report.project_action = "updated"
+                                report.masterplan_action = "updated"
                             else:
                                 cur.execute(
                                     """
-                                    INSERT INTO pm.project (
+                                    INSERT INTO pm.masterplan (
                                         name, external_id, start_date, finish_date, author, company, comments,
                                         creation_date, last_saved, created_by
                                     ) VALUES (
@@ -373,8 +373,8 @@ class MPPImporter:
                                     ) RETURNING id
                                     """,
                                     (
-                                        project_name,
-                                        project_external_id,
+                                        masterplan_name,
+                                        masterplan_external_id,
                                         parse_iso_datetime(info.get("start_date")),
                                         parse_iso_datetime(info.get("finish_date")),
                                         info.get("author"),
@@ -385,10 +385,10 @@ class MPPImporter:
                                         self.created_by,
                                     ),
                                 )
-                                project_id = cur.fetchone()[0]
-                                report.project_action = "created"
+                                masterplan_id = cur.fetchone()[0]
+                                report.masterplan_action = "created"
                         
-                        report.project_id = project_id
+                        report.masterplan_id = masterplan_id
 
                         # Inicializa contadores de baseline e timephased
                         baseline_count = 0
@@ -406,7 +406,7 @@ class MPPImporter:
                         # Fase 6: Import custom field definitions
                         with Timer("import_custom_field_definitions", timings):
                             custom_field_count = self._import_custom_field_definitions(
-                                cur, project_id, custom_field_definitions
+                                cur, masterplan_id, custom_field_definitions
                             )
                         report.custom_field_definitions = custom_field_count
 
@@ -417,7 +417,7 @@ class MPPImporter:
                         # Fase 8: Import calendários
                         with Timer("import_calendars", timings):
                             calendar_count = self._import_calendars(
-                                cur, project_id, calendars_data
+                                cur, masterplan_id, calendars_data
                             )
                         report.calendars = calendar_count
 
@@ -436,7 +436,7 @@ class MPPImporter:
                         # Fase 11: Import resources
                         with Timer("import_resources", timings):
                             resource_count, resource_id_map = self._import_resources(
-                                cur, project_id, resources_data
+                                cur, masterplan_id, resources_data
                             )
                         report.resources = resource_count
 
@@ -450,7 +450,7 @@ class MPPImporter:
                         # Fase 13: Import tasks
                         with Timer("import_tasks", timings):
                             task_count, task_id_map = self._import_tasks(
-                                cur, project_id, tasks_data
+                                cur, masterplan_id, tasks_data
                             )
                         report.tasks = task_count
 
@@ -463,7 +463,7 @@ class MPPImporter:
                         # Fase 15: Import assignments
                         with Timer("import_assignments", timings):
                             assignment_count = self._import_assignments(
-                                cur, project_id, assignments_data, task_id_map, resource_id_map
+                                cur, masterplan_id, assignments_data, task_id_map, resource_id_map
                             )
                         report.assignments = assignment_count
 
@@ -474,7 +474,7 @@ class MPPImporter:
                         # Fase 17: Import timephased data
                         with Timer("import_timephased", timings):
                             planned_rows, complete_rows, assignments_with_timephased = self._import_assignment_timephased(
-                                cur, project_id, timephased_data
+                                cur, masterplan_id, timephased_data
                             )
                         timephased_planned_rows = planned_rows
                         timephased_complete_rows = complete_rows
@@ -484,14 +484,14 @@ class MPPImporter:
                         # Fase 18: Import dependencies (já extraídas no bundle)
                         with Timer("import_dependencies", timings):
                             dependency_count = self._import_dependencies(
-                                cur, project_id, dependencies_data, task_id_map
+                                cur, masterplan_id, dependencies_data, task_id_map
                             )
                         report.dependencies = dependency_count
 
                         # Fase 19: Import baselines (já extraídas nos bundles)
                         with Timer("import_baselines", timings):
                             baseline_id_map = self._import_baselines(
-                                cur, project_id, baselines_meta
+                                cur, masterplan_id, baselines_meta
                             )
                             task_baseline_count = self._import_task_baselines(
                                 cur, baseline_id_map, task_id_map, task_baselines_data
@@ -513,7 +513,7 @@ class MPPImporter:
                             cur.execute(
                                 """
                                 INSERT INTO pm.import_log (
-                                    project_id, source_file, file_storage_path, file_hash,
+                                    masterplan_id, source_file, file_storage_path, file_hash,
                                     custom_field_definitions, tasks, resources, assignments,
                                     calendars, dependencies, total_time_ms, timings_ms,
                                     status, error_message, stats, created_by
@@ -522,7 +522,7 @@ class MPPImporter:
                                 ) RETURNING id
                                 """,
                                 (
-                                    project_id,
+                                    masterplan_id,
                                     report.source_file,
                                     file_storage_path,
                                     file_hash,
@@ -537,9 +537,9 @@ class MPPImporter:
                                     "completed",
                                     None,
                                     json.dumps({
-                                        "project_action": report.project_action,
-                                        "project_name": report.project_name,
-                                        "project_external_id": report.project_external_id,
+                                        "masterplan_action": report.masterplan_action,
+                                        "masterplan_name": report.masterplan_name,
+                                        "masterplan_external_id": report.masterplan_external_id,
                                         "baselines_count": baseline_count,
                                         "task_baselines_count": task_baseline_count,
                                         "resource_baselines_count": resource_baseline_count,
@@ -580,7 +580,7 @@ class MPPImporter:
                         cur.execute(
                             """
                             INSERT INTO pm.import_log (
-                                project_id, source_file, file_storage_path, file_hash,
+                                masterplan_id, source_file, file_storage_path, file_hash,
                                 custom_field_definitions, tasks, resources, assignments,
                                 calendars, dependencies, total_time_ms, timings_ms,
                                 status, error_message, stats, created_by
@@ -589,7 +589,7 @@ class MPPImporter:
                             ) RETURNING id
                             """,
                             (
-                                report.project_id,
+                                report.masterplan_id,
                                 report.source_file,
                                 report.file_storage_path,
                                 report.file_hash,
@@ -604,9 +604,9 @@ class MPPImporter:
                                 "failed",
                                 str(e),
                                 json.dumps({
-                                    "project_action": report.project_action,
-                                    "project_name": report.project_name,
-                                    "project_external_id": report.project_external_id,
+                                    "masterplan_action": report.masterplan_action,
+                                    "masterplan_name": report.masterplan_name,
+                                    "masterplan_external_id": report.masterplan_external_id,
                                 }),
                                 self.created_by,
                             ),
@@ -635,7 +635,7 @@ class MPPImporter:
     def _import_custom_field_definitions(
         self,
         cur,
-        project_id: int,
+        masterplan_id: int,
         definitions: List[Dict[str, Any]],
     ) -> int:
         """Importa definições de campos customizados usando bulk insert (otimizado).
@@ -657,7 +657,7 @@ class MPPImporter:
                 continue
             
             rows.append((
-                project_id,
+                masterplan_id,
                 field_type,
                 field_class,
                 defn.get("alias"),
@@ -672,11 +672,11 @@ class MPPImporter:
         cur.executemany(
             """
             INSERT INTO pm.custom_field_definition (
-                project_id, field_type, field_class, alias, data_type, created_by
+                masterplan_id, field_type, field_class, alias, data_type, created_by
             ) VALUES (
                 %s, %s, %s, %s, %s, %s
             )
-            ON CONFLICT (project_id, field_type, field_class)
+            ON CONFLICT (masterplan_id, field_type, field_class)
             WHERE deleted_at IS NULL
             DO UPDATE SET
                 alias = EXCLUDED.alias,
@@ -692,7 +692,7 @@ class MPPImporter:
     def _import_calendars(
         self,
         cur,
-        project_id: int,
+        masterplan_id: int,
         calendars: List[Dict[str, Any]],
     ) -> int:
         """Importa calendários do projeto.
@@ -720,7 +720,7 @@ class MPPImporter:
                 continue
             
             calendar_rows.append((
-                project_id,
+                masterplan_id,
                 external_id,
                 name,
                 self.created_by,
@@ -734,11 +734,11 @@ class MPPImporter:
         cur.executemany(
             """
             INSERT INTO pm.calendar (
-                project_id, external_id, name, created_by
+                masterplan_id, external_id, name, created_by
             ) VALUES (
                 %s, %s, %s, %s
             )
-            ON CONFLICT (project_id, external_id)
+            ON CONFLICT (masterplan_id, external_id)
             WHERE deleted_at IS NULL AND external_id IS NOT NULL
             DO UPDATE SET
                 name = EXCLUDED.name,
@@ -752,9 +752,9 @@ class MPPImporter:
         cur.execute(
             """
             SELECT id, external_id FROM pm.calendar
-            WHERE project_id = %s AND external_id = ANY(%s) AND deleted_at IS NULL
+            WHERE masterplan_id = %s AND external_id = ANY(%s) AND deleted_at IS NULL
             """,
-            (project_id, valid_external_ids),
+            (masterplan_id, valid_external_ids),
         )
         
         external_to_db_id: Dict[str, int] = {}
@@ -941,7 +941,7 @@ class MPPImporter:
     def _import_resources(
         self,
         cur,
-        project_id: int,
+        masterplan_id: int,
         resources: List[Dict[str, Any]],
     ) -> Tuple[int, Dict[str, int]]:
         """Importa recursos do projeto usando bulk insert (otimizado).
@@ -966,7 +966,7 @@ class MPPImporter:
                 continue
             
             rows.append((
-                project_id,
+                masterplan_id,
                 external_id,
                 name,
                 res.get("email"),
@@ -991,12 +991,12 @@ class MPPImporter:
             cur.executemany(
                 """
                 INSERT INTO pm.resource (
-                    project_id, external_id, name, email, type, "group",
+                    masterplan_id, external_id, name, email, type, "group",
                     max_units, standard_rate, cost, notes, custom_fields, created_by
                 ) VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                 )
-                ON CONFLICT (project_id, external_id)
+                ON CONFLICT (masterplan_id, external_id)
                 WHERE deleted_at IS NULL AND external_id IS NOT NULL
                 DO UPDATE SET
                     name = EXCLUDED.name,
@@ -1018,9 +1018,9 @@ class MPPImporter:
         cur.execute(
             """
             SELECT id, external_id FROM pm.resource
-            WHERE project_id = %s AND external_id = ANY(%s) AND deleted_at IS NULL
+            WHERE masterplan_id = %s AND external_id = ANY(%s) AND deleted_at IS NULL
             """,
-            (project_id, valid_external_ids),
+            (masterplan_id, valid_external_ids),
         )
         
         external_to_db_id: Dict[str, int] = {}
@@ -1034,7 +1034,7 @@ class MPPImporter:
     def _import_tasks(
         self,
         cur,
-        project_id: int,
+        masterplan_id: int,
         tasks: List[Dict[str, Any]],
     ) -> Tuple[int, Dict[str, int]]:
         """Importa tarefas do projeto usando bulk insert (otimizado).
@@ -1059,7 +1059,7 @@ class MPPImporter:
                 continue
             
             rows.append((
-                project_id,
+                masterplan_id,
                 external_id,
                 name,
                 parse_iso_datetime(task.get("start")),
@@ -1088,13 +1088,13 @@ class MPPImporter:
             cur.executemany(
                 """
                 INSERT INTO pm.task (
-                    project_id, external_id, name, start_date, finish_date,
+                    masterplan_id, external_id, name, start_date, finish_date,
                     duration, work, percent_complete, priority, notes, wbs,
                     outline_level, milestone, summary, custom_fields, created_by
                 ) VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                 )
-                ON CONFLICT (project_id, external_id)
+                ON CONFLICT (masterplan_id, external_id)
                 WHERE deleted_at IS NULL AND external_id IS NOT NULL
                 DO UPDATE SET
                     name = EXCLUDED.name,
@@ -1120,9 +1120,9 @@ class MPPImporter:
         cur.execute(
             """
             SELECT id, external_id FROM pm.task
-            WHERE project_id = %s AND external_id = ANY(%s) AND deleted_at IS NULL
+            WHERE masterplan_id = %s AND external_id = ANY(%s) AND deleted_at IS NULL
             """,
-            (project_id, valid_external_ids),
+            (masterplan_id, valid_external_ids),
         )
         
         external_to_db_id: Dict[str, int] = {}
@@ -1136,7 +1136,7 @@ class MPPImporter:
     def _import_assignments(
         self,
         cur,
-        project_id: int,
+        masterplan_id: int,
         assignments: List[Dict[str, Any]],
         task_id_map: Dict[str, int],
         resource_id_map: Dict[str, int],
@@ -1145,7 +1145,7 @@ class MPPImporter:
         
         Args:
             cur: Cursor do banco
-            project_id: ID do projeto
+            masterplan_id: ID do projeto
             assignments: Lista de assignments extraídos do .mpp
             task_id_map: Mapa de external_id -> task_id (do banco)
             resource_id_map: Mapa de external_id -> resource_id (do banco)
@@ -1171,7 +1171,7 @@ class MPPImporter:
                 continue
             
             rows.append((
-                project_id,
+                masterplan_id,
                 external_id,
                 task_id,
                 resource_id,
@@ -1195,13 +1195,13 @@ class MPPImporter:
             cur.executemany(
                 """
                 INSERT INTO pm.assignment (
-                    project_id, external_id, task_id, resource_id,
+                    masterplan_id, external_id, task_id, resource_id,
                     work, cost, start_date, finish_date, units,
                     percent_complete, custom_fields, created_by
                 ) VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                 )
-                ON CONFLICT (project_id, external_id)
+                ON CONFLICT (masterplan_id, external_id)
                 WHERE deleted_at IS NULL AND external_id IS NOT NULL
                 DO UPDATE SET
                     task_id = EXCLUDED.task_id,
@@ -1224,7 +1224,7 @@ class MPPImporter:
     def _import_dependencies(
         self,
         cur,
-        project_id: int,
+        masterplan_id: int,
         dependencies: List[Dict[str, Any]],
         task_id_map: Dict[str, int],
     ) -> int:
@@ -1232,7 +1232,7 @@ class MPPImporter:
         
         Args:
             cur: Cursor do banco
-            project_id: ID do projeto
+            masterplan_id: ID do projeto
             dependencies: Lista de dependências extraídas do .mpp
             task_id_map: Mapa de external_id -> task_id (do banco)
         
@@ -1260,7 +1260,7 @@ class MPPImporter:
                 continue
             
             rows.append((
-                project_id,
+                masterplan_id,
                 predecessor_task_id,
                 successor_task_id,
                 dep.get("type"),
@@ -1278,7 +1278,7 @@ class MPPImporter:
             cur.executemany(
                 """
                 INSERT INTO pm.task_dependency (
-                    project_id, predecessor_task_id, successor_task_id,
+                    masterplan_id, predecessor_task_id, successor_task_id,
                     dependency_type, lag, created_by
                 ) VALUES (
                     %s, %s, %s, %s, %s, %s
@@ -1299,14 +1299,14 @@ class MPPImporter:
     def _import_baselines(
         self,
         cur,
-        project_id: int,
+        masterplan_id: int,
         baselines_meta: List[Dict[str, Any]],
     ) -> Dict[str, int]:
         """Importa linhas de base (baselines) do projeto.
         
         Args:
             cur: Cursor do banco
-            project_id: ID do projeto
+            masterplan_id: ID do projeto
             baselines_meta: Lista de metadados de baseline (index, external_id, name)
         
         Returns:
@@ -1327,7 +1327,7 @@ class MPPImporter:
                 continue
             
             baseline_rows.append((
-                project_id,
+                masterplan_id,
                 external_id,
                 name,
                 self.created_by,
@@ -1341,11 +1341,11 @@ class MPPImporter:
         cur.executemany(
             """
             INSERT INTO pm.baseline (
-                project_id, external_id, name, created_by
+                masterplan_id, external_id, name, created_by
             ) VALUES (
                 %s, %s, %s, %s
             )
-            ON CONFLICT (project_id, external_id)
+            ON CONFLICT (masterplan_id, external_id)
             WHERE deleted_at IS NULL AND external_id IS NOT NULL
             DO UPDATE SET
                 name = EXCLUDED.name,
@@ -1359,9 +1359,9 @@ class MPPImporter:
         cur.execute(
             """
             SELECT id, external_id FROM pm.baseline
-            WHERE project_id = %s AND external_id = ANY(%s) AND deleted_at IS NULL
+            WHERE masterplan_id = %s AND external_id = ANY(%s) AND deleted_at IS NULL
             """,
-            (project_id, valid_external_ids),
+            (masterplan_id, valid_external_ids),
         )
         
         external_to_db_id: Dict[str, int] = {}
@@ -1532,14 +1532,14 @@ class MPPImporter:
     def _import_assignment_timephased(
         self,
         cur,
-        project_id: int,
+        masterplan_id: int,
         timephased_data: List[Dict[str, Any]],
     ) -> Tuple[int, int, int]:
         """Importa dados timephased (planned e complete) de assignments.
         
         Args:
             cur: Cursor do banco
-            project_id: ID do projeto
+            masterplan_id: ID do projeto
             timephased_data: Lista de timephased data extraída do .mpp
         
         Returns:
@@ -1556,9 +1556,9 @@ class MPPImporter:
         cur.execute(
             """
             SELECT id, external_id FROM pm.assignment
-            WHERE project_id = %s AND deleted_at IS NULL
+            WHERE masterplan_id = %s AND deleted_at IS NULL
             """,
-            (project_id,),
+            (masterplan_id,),
         )
         assignment_map: Dict[str, int] = {}
         for row in cur.fetchall():

@@ -99,8 +99,8 @@ def main() -> int:
         
         if report.success:
             print(f"[{status}] {report.source_file}")
-            print(f"       Projeto: {report.project_name} (ID: {report.project_id})")
-            print(f"       Ação: {report.project_action} | Tempo: {time_str}")
+            print(f"       Masterplan: {report.masterplan_name} (ID: {report.masterplan_id})")
+            print(f"       Ação: {report.masterplan_action} | Tempo: {time_str}")
             print(f"       Custom Fields: {report.custom_field_definitions}")
             success_count += 1
         else:

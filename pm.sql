@@ -1,10 +1,10 @@
 -- DROP SCHEMA pm;
 CREATE SCHEMA pm AUTHORIZATION alpha;
 
--- pm.project definition
+-- pm.masterplan definition
 -- Drop table
--- DROP TABLE pm.project;
-CREATE TABLE pm.project (
+-- DROP TABLE pm.masterplan;
+CREATE TABLE pm.masterplan (
     id int4 GENERATED ALWAYS AS IDENTITY(
         INCREMENT BY 1 MINVALUE 1 MAXVALUE 2147483647 START 1 CACHE 1 NO CYCLE
     ) NOT NULL,
@@ -23,18 +23,18 @@ CREATE TABLE pm.project (
     updated_by int4 NULL,
     deleted_at timestamp NULL,
     deleted_by int4 NULL,
-    CONSTRAINT project_pk PRIMARY KEY (id)
+    CONSTRAINT masterplan_pk PRIMARY KEY (id)
 );
-CREATE INDEX project_name_index ON pm.project USING btree (name);
-CREATE INDEX project_external_id_index ON pm.project USING btree (external_id);
-CREATE INDEX project_start_date_index ON pm.project USING btree (start_date);
-CREATE INDEX project_finish_date_index ON pm.project USING btree (finish_date);
+CREATE INDEX masterplan_name_index ON pm.masterplan USING btree (name);
+CREATE INDEX masterplan_external_id_index ON pm.masterplan USING btree (external_id);
+CREATE INDEX masterplan_start_date_index ON pm.masterplan USING btree (start_date);
+CREATE INDEX masterplan_finish_date_index ON pm.masterplan USING btree (finish_date);
 -- Table Triggers
-CREATE TRIGGER trigger_set_updated_at BEFORE UPDATE ON pm.project FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+CREATE TRIGGER trigger_set_updated_at BEFORE UPDATE ON pm.masterplan FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 -- Permissions
-ALTER TABLE pm.project OWNER TO alpha;
-GRANT ALL ON TABLE pm.project TO alpha;
-GRANT SELECT, DELETE, INSERT, UPDATE ON TABLE pm.project TO usage_on_tables;
+ALTER TABLE pm.masterplan OWNER TO alpha;
+GRANT ALL ON TABLE pm.masterplan TO alpha;
+GRANT SELECT, DELETE, INSERT, UPDATE ON TABLE pm.masterplan TO usage_on_tables;
 
 -- pm.import_log definition (auditoria de importações - arquivo fica no S3)
 -- Drop table
@@ -43,7 +43,7 @@ CREATE TABLE pm.import_log (
     id int4 GENERATED ALWAYS AS IDENTITY(
         INCREMENT BY 1 MINVALUE 1 MAXVALUE 2147483647 START 1 CACHE 1 NO CYCLE
     ) NOT NULL,
-    project_id int4 NOT NULL,
+    masterplan_id int4 NOT NULL,
     source_file varchar NOT NULL,
     file_storage_path varchar NULL,
     file_hash varchar NULL,
@@ -65,9 +65,9 @@ CREATE TABLE pm.import_log (
     created_at timestamp DEFAULT CURRENT_TIMESTAMP NOT NULL,
     created_by int4 NOT NULL,
     CONSTRAINT import_log_pk PRIMARY KEY (id),
-    CONSTRAINT import_log_project_id_fk FOREIGN KEY (project_id) REFERENCES pm.project(id)
+    CONSTRAINT import_log_masterplan_id_fk FOREIGN KEY (masterplan_id) REFERENCES pm.masterplan(id)
 );
-CREATE INDEX import_log_project_id_index ON pm.import_log USING btree (project_id);
+CREATE INDEX import_log_masterplan_id_index ON pm.import_log USING btree (masterplan_id);
 CREATE INDEX import_log_created_at_index ON pm.import_log USING btree (created_at);
 CREATE INDEX import_log_status_index ON pm.import_log USING btree (status);
 -- Permissions
@@ -82,7 +82,7 @@ CREATE TABLE pm.task (
     id int4 GENERATED ALWAYS AS IDENTITY(
         INCREMENT BY 1 MINVALUE 1 MAXVALUE 2147483647 START 1 CACHE 1 NO CYCLE
     ) NOT NULL,
-    project_id int4 NOT NULL,
+    masterplan_id int4 NOT NULL,
     external_id varchar NULL,
     "name" varchar NOT NULL,
     start_date timestamp NULL,
@@ -104,14 +104,14 @@ CREATE TABLE pm.task (
     deleted_at timestamp NULL,
     deleted_by int4 NULL,
     CONSTRAINT task_pk PRIMARY KEY (id),
-    CONSTRAINT task_project_id_fk FOREIGN KEY (project_id) REFERENCES pm.project(id)
+    CONSTRAINT task_masterplan_id_fk FOREIGN KEY (masterplan_id) REFERENCES pm.masterplan(id)
 );
-CREATE INDEX task_project_id_index ON pm.task USING btree (project_id);
+CREATE INDEX task_masterplan_id_index ON pm.task USING btree (masterplan_id);
 CREATE INDEX task_external_id_index ON pm.task USING btree (external_id);
 CREATE INDEX task_start_date_index ON pm.task USING btree (start_date);
 CREATE INDEX task_finish_date_index ON pm.task USING btree (finish_date);
 CREATE INDEX task_wbs_index ON pm.task USING btree (wbs);
-CREATE UNIQUE INDEX task_unique_active ON pm.task USING btree (project_id, external_id)
+CREATE UNIQUE INDEX task_unique_active ON pm.task USING btree (masterplan_id, external_id)
 WHERE (deleted_at IS NULL AND external_id IS NOT NULL);
 -- Table Triggers
 CREATE TRIGGER trigger_set_updated_at BEFORE UPDATE ON pm.task FOR EACH ROW EXECUTE FUNCTION set_updated_at();
@@ -127,7 +127,7 @@ CREATE TABLE pm.resource (
     id int4 GENERATED ALWAYS AS IDENTITY(
         INCREMENT BY 1 MINVALUE 1 MAXVALUE 2147483647 START 1 CACHE 1 NO CYCLE
     ) NOT NULL,
-    project_id int4 NOT NULL,
+    masterplan_id int4 NOT NULL,
     external_id varchar NULL,
     "name" varchar NOT NULL,
     email varchar NULL,
@@ -145,13 +145,13 @@ CREATE TABLE pm.resource (
     deleted_at timestamp NULL,
     deleted_by int4 NULL,
     CONSTRAINT resource_pk PRIMARY KEY (id),
-    CONSTRAINT resource_project_id_fk FOREIGN KEY (project_id) REFERENCES pm.project(id)
+    CONSTRAINT resource_masterplan_id_fk FOREIGN KEY (masterplan_id) REFERENCES pm.masterplan(id)
 );
-CREATE INDEX resource_project_id_index ON pm.resource USING btree (project_id);
+CREATE INDEX resource_masterplan_id_index ON pm.resource USING btree (masterplan_id);
 CREATE INDEX resource_external_id_index ON pm.resource USING btree (external_id);
 CREATE INDEX resource_name_index ON pm.resource USING btree (name);
 CREATE INDEX resource_email_index ON pm.resource USING btree (email);
-CREATE UNIQUE INDEX resource_unique_active ON pm.resource USING btree (project_id, external_id)
+CREATE UNIQUE INDEX resource_unique_active ON pm.resource USING btree (masterplan_id, external_id)
 WHERE (deleted_at IS NULL AND external_id IS NOT NULL);
 -- Table Triggers
 CREATE TRIGGER trigger_set_updated_at BEFORE UPDATE ON pm.resource FOR EACH ROW EXECUTE FUNCTION set_updated_at();
@@ -167,7 +167,7 @@ CREATE TABLE pm.assignment (
     id int4 GENERATED ALWAYS AS IDENTITY(
         INCREMENT BY 1 MINVALUE 1 MAXVALUE 2147483647 START 1 CACHE 1 NO CYCLE
     ) NOT NULL,
-    project_id int4 NOT NULL,
+    masterplan_id int4 NOT NULL,
     external_id varchar NULL,
     task_id int4 NOT NULL,
     resource_id int4 NOT NULL,
@@ -185,15 +185,15 @@ CREATE TABLE pm.assignment (
     deleted_at timestamp NULL,
     deleted_by int4 NULL,
     CONSTRAINT assignment_pk PRIMARY KEY (id),
-    CONSTRAINT assignment_project_id_fk FOREIGN KEY (project_id) REFERENCES pm.project(id),
+    CONSTRAINT assignment_masterplan_id_fk FOREIGN KEY (masterplan_id) REFERENCES pm.masterplan(id),
     CONSTRAINT assignment_task_id_fk FOREIGN KEY (task_id) REFERENCES pm.task(id),
     CONSTRAINT assignment_resource_id_fk FOREIGN KEY (resource_id) REFERENCES pm.resource(id)
 );
-CREATE INDEX assignment_project_id_index ON pm.assignment USING btree (project_id);
+CREATE INDEX assignment_masterplan_id_index ON pm.assignment USING btree (masterplan_id);
 CREATE INDEX assignment_external_id_index ON pm.assignment USING btree (external_id);
 CREATE INDEX assignment_task_id_index ON pm.assignment USING btree (task_id);
 CREATE INDEX assignment_resource_id_index ON pm.assignment USING btree (resource_id);
-CREATE UNIQUE INDEX assignment_unique_active ON pm.assignment USING btree (project_id, external_id)
+CREATE UNIQUE INDEX assignment_unique_active ON pm.assignment USING btree (masterplan_id, external_id)
 WHERE (deleted_at IS NULL AND external_id IS NOT NULL);
 -- Table Triggers
 CREATE TRIGGER trigger_set_updated_at BEFORE UPDATE ON pm.assignment FOR EACH ROW EXECUTE FUNCTION set_updated_at();
@@ -209,7 +209,7 @@ CREATE TABLE pm.task_dependency (
     id int4 GENERATED ALWAYS AS IDENTITY(
         INCREMENT BY 1 MINVALUE 1 MAXVALUE 2147483647 START 1 CACHE 1 NO CYCLE
     ) NOT NULL,
-    project_id int4 NOT NULL,
+    masterplan_id int4 NOT NULL,
     predecessor_task_id int4 NOT NULL,
     successor_task_id int4 NOT NULL,
     dependency_type varchar NULL,
@@ -221,11 +221,11 @@ CREATE TABLE pm.task_dependency (
     deleted_at timestamp NULL,
     deleted_by int4 NULL,
     CONSTRAINT task_dependency_pk PRIMARY KEY (id),
-    CONSTRAINT task_dependency_project_id_fk FOREIGN KEY (project_id) REFERENCES pm.project(id),
+    CONSTRAINT task_dependency_masterplan_id_fk FOREIGN KEY (masterplan_id) REFERENCES pm.masterplan(id),
     CONSTRAINT task_dependency_predecessor_task_id_fk FOREIGN KEY (predecessor_task_id) REFERENCES pm.task(id),
     CONSTRAINT task_dependency_successor_task_id_fk FOREIGN KEY (successor_task_id) REFERENCES pm.task(id)
 );
-CREATE INDEX task_dependency_project_id_index ON pm.task_dependency USING btree (project_id);
+CREATE INDEX task_dependency_masterplan_id_index ON pm.task_dependency USING btree (masterplan_id);
 CREATE INDEX task_dependency_predecessor_task_id_index ON pm.task_dependency USING btree (predecessor_task_id);
 CREATE INDEX task_dependency_successor_task_id_index ON pm.task_dependency USING btree (successor_task_id);
 CREATE UNIQUE INDEX task_dependency_unique_active ON pm.task_dependency USING btree (predecessor_task_id, successor_task_id)
@@ -244,7 +244,7 @@ CREATE TABLE pm.calendar (
     id int4 GENERATED ALWAYS AS IDENTITY(
         INCREMENT BY 1 MINVALUE 1 MAXVALUE 2147483647 START 1 CACHE 1 NO CYCLE
     ) NOT NULL,
-    project_id int4 NOT NULL,
+    masterplan_id int4 NOT NULL,
     external_id varchar NULL,
     "name" varchar NOT NULL,
     parent_calendar_id int4 NULL,
@@ -255,13 +255,13 @@ CREATE TABLE pm.calendar (
     deleted_at timestamp NULL,
     deleted_by int4 NULL,
     CONSTRAINT calendar_pk PRIMARY KEY (id),
-    CONSTRAINT calendar_project_id_fk FOREIGN KEY (project_id) REFERENCES pm.project(id),
+    CONSTRAINT calendar_masterplan_id_fk FOREIGN KEY (masterplan_id) REFERENCES pm.masterplan(id),
     CONSTRAINT calendar_parent_calendar_id_fk FOREIGN KEY (parent_calendar_id) REFERENCES pm.calendar(id)
 );
-CREATE INDEX calendar_project_id_index ON pm.calendar USING btree (project_id);
+CREATE INDEX calendar_masterplan_id_index ON pm.calendar USING btree (masterplan_id);
 CREATE INDEX calendar_external_id_index ON pm.calendar USING btree (external_id);
 CREATE INDEX calendar_parent_calendar_id_index ON pm.calendar USING btree (parent_calendar_id);
-CREATE UNIQUE INDEX calendar_unique_active ON pm.calendar USING btree (project_id, external_id)
+CREATE UNIQUE INDEX calendar_unique_active ON pm.calendar USING btree (masterplan_id, external_id)
 WHERE (deleted_at IS NULL AND external_id IS NOT NULL);
 -- Table Triggers
 CREATE TRIGGER trigger_set_updated_at BEFORE UPDATE ON pm.calendar FOR EACH ROW EXECUTE FUNCTION set_updated_at();
@@ -431,7 +431,7 @@ CREATE TABLE pm.baseline (
     id int4 GENERATED ALWAYS AS IDENTITY(
         INCREMENT BY 1 MINVALUE 1 MAXVALUE 2147483647 START 1 CACHE 1 NO CYCLE
     ) NOT NULL,
-    project_id int4 NOT NULL,
+    masterplan_id int4 NOT NULL,
     external_id varchar NULL,
     "name" varchar NOT NULL,
     created_at timestamp DEFAULT CURRENT_TIMESTAMP NOT NULL,
@@ -441,12 +441,12 @@ CREATE TABLE pm.baseline (
     deleted_at timestamp NULL,
     deleted_by int4 NULL,
     CONSTRAINT baseline_pk PRIMARY KEY (id),
-    CONSTRAINT baseline_project_id_fk FOREIGN KEY (project_id) REFERENCES pm.project(id)
+    CONSTRAINT baseline_masterplan_id_fk FOREIGN KEY (masterplan_id) REFERENCES pm.masterplan(id)
 );
-CREATE INDEX baseline_project_id_index ON pm.baseline USING btree (project_id);
+CREATE INDEX baseline_masterplan_id_index ON pm.baseline USING btree (masterplan_id);
 CREATE INDEX baseline_external_id_index ON pm.baseline USING btree (external_id);
 CREATE INDEX baseline_name_index ON pm.baseline USING btree (name);
-CREATE UNIQUE INDEX baseline_unique_active ON pm.baseline USING btree (project_id, external_id)
+CREATE UNIQUE INDEX baseline_unique_active ON pm.baseline USING btree (masterplan_id, external_id)
 WHERE (deleted_at IS NULL AND external_id IS NOT NULL);
 -- Table Triggers
 CREATE TRIGGER trigger_set_updated_at BEFORE UPDATE ON pm.baseline FOR EACH ROW EXECUTE FUNCTION set_updated_at();
@@ -529,7 +529,7 @@ CREATE TABLE pm.custom_field_definition (
     id int4 GENERATED ALWAYS AS IDENTITY(
         INCREMENT BY 1 MINVALUE 1 MAXVALUE 2147483647 START 1 CACHE 1 NO CYCLE
     ) NOT NULL,
-    project_id int4 NOT NULL,
+    masterplan_id int4 NOT NULL,
     field_type varchar NOT NULL,
     field_class varchar NOT NULL,
     alias varchar NULL,
@@ -541,12 +541,12 @@ CREATE TABLE pm.custom_field_definition (
     deleted_at timestamp NULL,
     deleted_by int4 NULL,
     CONSTRAINT custom_field_definition_pk PRIMARY KEY (id),
-    CONSTRAINT custom_field_definition_project_id_fk FOREIGN KEY (project_id) REFERENCES pm.project(id)
+    CONSTRAINT custom_field_definition_masterplan_id_fk FOREIGN KEY (masterplan_id) REFERENCES pm.masterplan(id)
 );
-CREATE INDEX custom_field_definition_project_id_index ON pm.custom_field_definition USING btree (project_id);
+CREATE INDEX custom_field_definition_masterplan_id_index ON pm.custom_field_definition USING btree (masterplan_id);
 CREATE INDEX custom_field_definition_field_type_index ON pm.custom_field_definition USING btree (field_type);
 CREATE INDEX custom_field_definition_field_class_index ON pm.custom_field_definition USING btree (field_class);
-CREATE UNIQUE INDEX custom_field_definition_unique_active ON pm.custom_field_definition USING btree (project_id, field_type, field_class)
+CREATE UNIQUE INDEX custom_field_definition_unique_active ON pm.custom_field_definition USING btree (masterplan_id, field_type, field_class)
 WHERE (deleted_at IS NULL);
 -- Table Triggers
 CREATE TRIGGER trigger_set_updated_at BEFORE UPDATE ON pm.custom_field_definition FOR EACH ROW EXECUTE FUNCTION set_updated_at();
@@ -555,80 +555,80 @@ ALTER TABLE pm.custom_field_definition OWNER TO alpha;
 GRANT ALL ON TABLE pm.custom_field_definition TO alpha;
 GRANT SELECT, DELETE, INSERT, UPDATE ON TABLE pm.custom_field_definition TO usage_on_tables;
 
--- pm.user_access_project definition
+-- pm.user_access_masterplan definition
 -- Drop table
--- DROP TABLE pm.user_access_project;
-CREATE TABLE pm.user_access_project (
+-- DROP TABLE pm.user_access_masterplan;
+CREATE TABLE pm.user_access_masterplan (
     id int4 GENERATED ALWAYS AS IDENTITY(
         INCREMENT BY 1 MINVALUE 1 MAXVALUE 2147483647 START 1 CACHE 1 NO CYCLE
     ) NOT NULL,
     user_id int4 NOT NULL,
-    project_id int4 NOT NULL,
+    masterplan_id int4 NOT NULL,
     created_at timestamp DEFAULT now() NOT NULL,
     created_by int4 NOT NULL,
     deleted_at timestamp NULL,
     deleted_by int4 NULL,
-    CONSTRAINT user_access_project_pk PRIMARY KEY (id),
-    CONSTRAINT user_access_project_project_id_fk FOREIGN KEY (project_id) REFERENCES pm.project(id)
+    CONSTRAINT user_access_masterplan_pk PRIMARY KEY (id),
+    CONSTRAINT user_access_masterplan_masterplan_id_fk FOREIGN KEY (masterplan_id) REFERENCES pm.masterplan(id)
 );
-CREATE INDEX user_access_project_project_id_index ON pm.user_access_project USING btree (project_id);
-CREATE INDEX user_access_project_user_id_index ON pm.user_access_project USING btree (user_id);
-CREATE UNIQUE INDEX user_access_project_unique_active ON pm.user_access_project USING btree (project_id, user_id)
+CREATE INDEX user_access_masterplan_masterplan_id_index ON pm.user_access_masterplan USING btree (masterplan_id);
+CREATE INDEX user_access_masterplan_user_id_index ON pm.user_access_masterplan USING btree (user_id);
+CREATE UNIQUE INDEX user_access_masterplan_unique_active ON pm.user_access_masterplan USING btree (masterplan_id, user_id)
 WHERE (deleted_at IS NULL);
 -- Permissions
-ALTER TABLE pm.user_access_project OWNER TO alpha;
-GRANT ALL ON TABLE pm.user_access_project TO alpha;
-GRANT SELECT, DELETE, INSERT, UPDATE ON TABLE pm.user_access_project TO usage_on_tables;
+ALTER TABLE pm.user_access_masterplan OWNER TO alpha;
+GRANT ALL ON TABLE pm.user_access_masterplan TO alpha;
+GRANT SELECT, DELETE, INSERT, UPDATE ON TABLE pm.user_access_masterplan TO usage_on_tables;
 
--- pm.client_user_group_access_project definition
+-- pm.client_user_group_access_masterplan definition
 -- Drop table
--- DROP TABLE pm.client_user_group_access_project;
-CREATE TABLE pm.client_user_group_access_project (
+-- DROP TABLE pm.client_user_group_access_masterplan;
+CREATE TABLE pm.client_user_group_access_masterplan (
     id int4 GENERATED ALWAYS AS IDENTITY(
         INCREMENT BY 1 MINVALUE 1 MAXVALUE 2147483647 START 1 CACHE 1 NO CYCLE
     ) NOT NULL,
     user_group_id int4 NOT NULL,
-    project_id int4 NOT NULL,
+    masterplan_id int4 NOT NULL,
     created_at timestamp DEFAULT now() NOT NULL,
     created_by int4 NOT NULL,
     deleted_at timestamp NULL,
     deleted_by int4 NULL,
-    CONSTRAINT client_user_group_access_project_pk PRIMARY KEY (id),
-    CONSTRAINT client_user_group_access_project_project_id_fk FOREIGN KEY (project_id) REFERENCES pm.project(id)
+    CONSTRAINT client_user_group_access_masterplan_pk PRIMARY KEY (id),
+    CONSTRAINT client_user_group_access_masterplan_masterplan_id_fk FOREIGN KEY (masterplan_id) REFERENCES pm.masterplan(id)
 );
-CREATE INDEX client_user_group_access_project_project_id_index ON pm.client_user_group_access_project USING btree (project_id);
-CREATE INDEX client_user_group_access_project_user_group_id_index ON pm.client_user_group_access_project USING btree (user_group_id);
-CREATE UNIQUE INDEX client_user_group_access_project_unique_active ON pm.client_user_group_access_project USING btree (project_id, user_group_id)
+CREATE INDEX client_user_group_access_masterplan_masterplan_id_index ON pm.client_user_group_access_masterplan USING btree (masterplan_id);
+CREATE INDEX client_user_group_access_masterplan_user_group_id_index ON pm.client_user_group_access_masterplan USING btree (user_group_id);
+CREATE UNIQUE INDEX client_user_group_access_masterplan_unique_active ON pm.client_user_group_access_masterplan USING btree (masterplan_id, user_group_id)
 WHERE (deleted_at IS NULL);
 -- Permissions
-ALTER TABLE pm.client_user_group_access_project OWNER TO alpha;
-GRANT ALL ON TABLE pm.client_user_group_access_project TO alpha;
-GRANT SELECT, DELETE, INSERT, UPDATE ON TABLE pm.client_user_group_access_project TO usage_on_tables;
+ALTER TABLE pm.client_user_group_access_masterplan OWNER TO alpha;
+GRANT ALL ON TABLE pm.client_user_group_access_masterplan TO alpha;
+GRANT SELECT, DELETE, INSERT, UPDATE ON TABLE pm.client_user_group_access_masterplan TO usage_on_tables;
 
--- pm.virtual_site_project definition
+-- pm.virtual_site_masterplan definition
 -- Drop table
--- DROP TABLE pm.virtual_site_project;
-CREATE TABLE pm.virtual_site_project (
+-- DROP TABLE pm.virtual_site_masterplan;
+CREATE TABLE pm.virtual_site_masterplan (
     id int4 GENERATED ALWAYS AS IDENTITY(
         INCREMENT BY 1 MINVALUE 1 MAXVALUE 2147483647 START 1 CACHE 1 NO CYCLE
     ) NOT NULL,
     virtual_site_id int4 NOT NULL,
-    project_id int4 NOT NULL,
+    masterplan_id int4 NOT NULL,
     created_at timestamp DEFAULT now() NOT NULL,
     created_by int4 NOT NULL,
     deleted_at timestamp NULL,
     deleted_by int4 NULL,
-    CONSTRAINT virtual_site_project_pk PRIMARY KEY (id),
-    CONSTRAINT virtual_site_project_project_id_fk FOREIGN KEY (project_id) REFERENCES pm.project(id)
+    CONSTRAINT virtual_site_masterplan_pk PRIMARY KEY (id),
+    CONSTRAINT virtual_site_masterplan_masterplan_id_fk FOREIGN KEY (masterplan_id) REFERENCES pm.masterplan(id)
 );
-CREATE INDEX virtual_site_project_project_id_index ON pm.virtual_site_project USING btree (project_id);
-CREATE INDEX virtual_site_project_virtual_site_id_index ON pm.virtual_site_project USING btree (virtual_site_id);
-CREATE UNIQUE INDEX virtual_site_project_unique_active ON pm.virtual_site_project USING btree (project_id, virtual_site_id)
+CREATE INDEX virtual_site_masterplan_masterplan_id_index ON pm.virtual_site_masterplan USING btree (masterplan_id);
+CREATE INDEX virtual_site_masterplan_virtual_site_id_index ON pm.virtual_site_masterplan USING btree (virtual_site_id);
+CREATE UNIQUE INDEX virtual_site_masterplan_unique_active ON pm.virtual_site_masterplan USING btree (masterplan_id, virtual_site_id)
 WHERE (deleted_at IS NULL);
 -- Permissions
-ALTER TABLE pm.virtual_site_project OWNER TO alpha;
-GRANT ALL ON TABLE pm.virtual_site_project TO alpha;
-GRANT SELECT, DELETE, INSERT, UPDATE ON TABLE pm.virtual_site_project TO usage_on_tables;
+ALTER TABLE pm.virtual_site_masterplan OWNER TO alpha;
+GRANT ALL ON TABLE pm.virtual_site_masterplan TO alpha;
+GRANT SELECT, DELETE, INSERT, UPDATE ON TABLE pm.virtual_site_masterplan TO usage_on_tables;
 
 -- Permissions
 GRANT ALL ON SCHEMA pm TO alpha;

@@ -1,0 +1,460 @@
+{
+	"info": {
+		"_postman_id": "mpp-importer-api",
+		"name": "MPP Importer API",
+		"description": "API REST para upload e importação de arquivos Microsoft Project (.mpp) para PostgreSQL",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "Health Checks",
+			"item": [
+				{
+					"name": "Health Check Completo",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/health",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"health"
+							]
+						},
+						"description": "Health check completo - verifica todos os serviços (API, Database, S3)"
+					},
+					"response": [
+						{
+							"name": "Success",
+							"originalRequest": {
+								"method": "GET",
+								"header": [],
+								"url": {
+									"raw": "{{base_url}}/health",
+									"host": [
+										"{{base_url}}"
+									],
+									"path": [
+										"health"
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"cookie": [],
+							"body": "{\n    \"status\": \"healthy\",\n    \"timestamp\": \"2026-01-30T12:00:00.000000\",\n    \"checks\": {\n        \"api\": {\n            \"status\": \"healthy\"\n        },\n        \"database\": {\n            \"status\": \"healthy\"\n        },\n        \"s3\": {\n            \"status\": \"healthy\",\n            \"bucket\": \"meu-bucket\"\n        }\n    }\n}"
+						}
+					]
+				},
+				{
+					"name": "Liveness Probe",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/health/live",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"health",
+								"live"
+							]
+						},
+						"description": "Liveness probe - verifica se a API está rodando"
+					},
+					"response": [
+						{
+							"name": "Success",
+							"originalRequest": {
+								"method": "GET",
+								"header": [],
+								"url": {
+									"raw": "{{base_url}}/health/live",
+									"host": [
+										"{{base_url}}"
+									],
+									"path": [
+										"health",
+										"live"
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"cookie": [],
+							"body": "{\n    \"status\": \"alive\",\n    \"timestamp\": \"2026-01-30T12:00:00.000000\"\n}"
+						}
+					]
+				},
+				{
+					"name": "Readiness Probe",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/health/ready",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"health",
+								"ready"
+							]
+						},
+						"description": "Readiness probe - verifica se a API está pronta para receber requests (DB + S3 disponíveis)"
+					},
+					"response": [
+						{
+							"name": "Success",
+							"originalRequest": {
+								"method": "GET",
+								"header": [],
+								"url": {
+									"raw": "{{base_url}}/health/ready",
+									"host": [
+										"{{base_url}}"
+									],
+									"path": [
+										"health",
+										"ready"
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"cookie": [],
+							"body": "{\n    \"status\": \"ready\",\n    \"timestamp\": \"2026-01-30T12:00:00.000000\"\n}"
+						},
+						{
+							"name": "Not Ready",
+							"originalRequest": {
+								"method": "GET",
+								"header": [],
+								"url": {
+									"raw": "{{base_url}}/health/ready",
+									"host": [
+										"{{base_url}}"
+									],
+									"path": [
+										"health",
+										"ready"
+									]
+								}
+							},
+							"status": "Service Unavailable",
+							"code": 503,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"cookie": [],
+							"body": "{\n    \"status\": \"not_ready\",\n    \"timestamp\": \"2026-01-30T12:00:00.000000\",\n    \"errors\": [\n        \"database: connection timeout\",\n        \"s3: S3_BUCKET not configured\"\n    ]\n}"
+						}
+					]
+				}
+			],
+			"description": "Endpoints de health check (não requerem autenticação)"
+		},
+		{
+			"name": "Upload",
+			"item": [
+				{
+					"name": "Upload Arquivo MPP",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{jwt_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "file",
+									"type": "file",
+									"src": [],
+									"description": "Arquivo .mpp para upload"
+								}
+							],
+							"options": {
+								"formdata": {
+									"file": {
+										"description": "Selecione um arquivo .mpp para fazer upload"
+									}
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/upload",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"upload"
+							]
+						},
+						"description": "Upload de arquivo .mpp, importação e salvamento no S3.\n\n**Requer autenticação via Bearer token JWT.**\n\nFluxo:\n1. Valida e calcula hash do arquivo\n2. Importa o arquivo no banco de dados\n3. Salva o arquivo no S3 em `imports/{masterplan_id}/{arquivo}`\n4. Atualiza o import_log com o path do S3 e hash\n\n**Parâmetros:**\n- `file`: Arquivo .mpp (obrigatório)\n\n**Retorna:**\n- masterplan_id: ID do masterplan criado\n- s3_uri: URI do arquivo no S3\n- file_hash: Hash SHA256 do arquivo\n- import_log_id: ID do log de importação"
+					},
+					"response": [
+						{
+							"name": "Success",
+							"originalRequest": {
+								"method": "POST",
+								"header": [],
+								"body": {
+									"mode": "formdata",
+									"formdata": [
+										{
+											"key": "file",
+											"type": "file",
+											"src": "projeto.mpp"
+										}
+									]
+								},
+								"url": {
+									"raw": "{{base_url}}/upload",
+									"host": [
+										"{{base_url}}"
+									],
+									"path": [
+										"upload"
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"cookie": [],
+							"body": "{\n    \"success\": true,\n    \"masterplan_id\": 1,\n    \"masterplan_name\": \"Meu Masterplan\",\n    \"masterplan_action\": \"created\",\n    \"import_log_id\": 42,\n    \"s3_uri\": \"s3://meu-bucket/imports/1/20260130_120000_projeto.mpp\",\n    \"s3_bucket\": \"meu-bucket\",\n    \"s3_key\": \"imports/1/20260130_120000_projeto.mpp\",\n    \"file_hash\": \"a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456\",\n    \"filename\": \"projeto.mpp\",\n    \"size_bytes\": 1234567,\n    \"tasks\": 150,\n    \"resources\": 20,\n    \"assignments\": 300,\n    \"calendars\": 3,\n    \"dependencies\": 100,\n    \"total_time_seconds\": 5.23\n}"
+						},
+						{
+							"name": "Error - Arquivo não fornecido",
+							"originalRequest": {
+								"method": "POST",
+								"header": [],
+								"body": {
+									"mode": "formdata",
+									"formdata": []
+								},
+								"url": {
+									"raw": "{{base_url}}/upload",
+									"host": [
+										"{{base_url}}"
+									],
+									"path": [
+										"upload"
+									]
+								}
+							},
+							"status": "Bad Request",
+							"code": 400,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"cookie": [],
+							"body": "{\n    \"detail\": \"Nome do arquivo não fornecido\"\n}"
+						},
+						{
+							"name": "Error - Arquivo não é .mpp",
+							"originalRequest": {
+								"method": "POST",
+								"header": [],
+								"body": {
+									"mode": "formdata",
+									"formdata": [
+										{
+											"key": "file",
+											"type": "file",
+											"src": "arquivo.txt"
+										}
+									]
+								},
+								"url": {
+									"raw": "{{base_url}}/upload",
+									"host": [
+										"{{base_url}}"
+									],
+									"path": [
+										"upload"
+									]
+								}
+							},
+							"status": "Bad Request",
+							"code": 400,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"cookie": [],
+							"body": "{\n    \"detail\": \"Apenas arquivos .mpp são aceitos\"\n}"
+						},
+						{
+							"name": "Error - Token inválido",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Authorization",
+										"value": "Bearer token_invalido"
+									}
+								],
+								"body": {
+									"mode": "formdata",
+									"formdata": [
+										{
+											"key": "file",
+											"type": "file",
+											"src": "projeto.mpp"
+										}
+									]
+								},
+								"url": {
+									"raw": "{{base_url}}/upload",
+									"host": [
+										"{{base_url}}"
+									],
+									"path": [
+										"upload"
+									]
+								}
+							},
+							"status": "Unauthorized",
+							"code": 401,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"cookie": [],
+							"body": "{\n    \"detail\": \"Token inválido: Invalid token\"\n}"
+						},
+						{
+							"name": "Error - Token expirado",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Authorization",
+										"value": "Bearer token_expirado"
+									}
+								],
+								"body": {
+									"mode": "formdata",
+									"formdata": [
+										{
+											"key": "file",
+											"type": "file",
+											"src": "projeto.mpp"
+										}
+									]
+								},
+								"url": {
+									"raw": "{{base_url}}/upload",
+									"host": [
+										"{{base_url}}"
+									],
+									"path": [
+										"upload"
+									]
+								}
+							},
+							"status": "Unauthorized",
+							"code": 401,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"cookie": [],
+							"body": "{\n    \"detail\": \"Token expirado\"\n}"
+						}
+					]
+				}
+			],
+			"description": "Endpoints de upload e importação (requerem autenticação JWT)"
+		}
+	],
+	"event": [
+		{
+			"listen": "prerequest",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					""
+				]
+			}
+		},
+		{
+			"listen": "test",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					""
+				]
+			}
+		}
+	],
+	"variable": [
+		{
+			"key": "base_url",
+			"value": "http://localhost:8000",
+			"type": "string"
+		},
+		{
+			"key": "jwt_token",
+			"value": "",
+			"type": "string"
+		}
+	]
+}

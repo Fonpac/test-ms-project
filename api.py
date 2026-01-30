@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 import jwt
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
@@ -71,12 +71,12 @@ async def get_current_user(
     except jwt.InvalidTokenError as e:
         raise HTTPException(status_code=401, detail=f"Token inválido: {e}")
     
-    # Extrai o user_id do campo "sub"
-    user_id_value = payload.get("sub")
+    # Extrai o user_id do campo "id"
+    user_id_value = payload.get("id")
     if user_id_value is None:
         raise HTTPException(
             status_code=401,
-            detail="Campo 'sub' não encontrado no token",
+            detail="Campo 'id' não encontrado no token",
         )
     
     try:
@@ -84,7 +84,7 @@ async def get_current_user(
     except (ValueError, TypeError):
         raise HTTPException(
             status_code=401,
-            detail="Campo 'sub' deve ser um número inteiro",
+            detail="Campo 'id' deve ser um número inteiro",
         )
     
     return CurrentUser(user_id=user_id, payload=payload)
@@ -97,6 +97,19 @@ async def get_current_user(
 def _get_s3_client():
     import boto3
     return boto3.client("s3", region_name=AWS_REGION)
+
+
+def _sanitize_metadata_value(value: str) -> str:
+    """Converte string para ASCII, removendo caracteres não-ASCII."""
+    if not value:
+        return ""
+    # Tenta codificar para ASCII, substituindo caracteres não-ASCII
+    return value.encode("ascii", errors="replace").decode("ascii")
+
+
+def _sanitize_metadata(metadata: dict) -> dict:
+    """Sanitiza todos os valores dos metadados para ASCII."""
+    return {key: _sanitize_metadata_value(str(value)) for key, value in metadata.items()}
 
 
 # =============================================================================
@@ -199,6 +212,7 @@ async def readiness_probe():
 @app.post("/upload")
 async def upload_mpp(
     file: UploadFile = File(..., description="Arquivo .mpp para upload"),
+    masterplan_external_id: str = Form(None, description="UUID do masterplan para atualização (opcional)"),
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """
@@ -213,9 +227,12 @@ async def upload_mpp(
     4. Atualiza o import_log com o path do S3 e hash
     
     - **file**: Arquivo .mpp (obrigatório)
+    - **masterplan_external_id**: UUID do masterplan para atualização (opcional). 
+      Se fornecido, o sistema tentará atualizar o masterplan existente com esse UUID.
+      Se não fornecido, criará um novo masterplan ou atualizará baseado no external_id do arquivo.
     
     Retorna:
-    - masterplan_id: ID do masterplan criado
+    - masterplan_id: ID do masterplan criado ou atualizado
     - s3_uri: URI do arquivo no S3
     - file_hash: Hash SHA256 do arquivo
     - import_log_id: ID do log de importação
@@ -261,6 +278,7 @@ async def upload_mpp(
             tmp_path,
             source_file=file.filename,
             file_hash=file_hash,
+            masterplan_external_id=masterplan_external_id,
         )
         
         if not result.success:
@@ -282,18 +300,20 @@ async def upload_mpp(
     
     try:
         s3 = _get_s3_client()
+        # Sanitiza metadados para garantir apenas caracteres ASCII
+        metadata = {
+            "original-filename": file.filename,
+            "masterplan-id": str(masterplan_id),
+            "import-log-id": str(import_log_id),
+            "file-hash": file_hash,
+            "uploaded-at": datetime.utcnow().isoformat(),
+        }
         s3.put_object(
             Bucket=S3_BUCKET,
             Key=s3_key,
             Body=content,
             ContentType="application/vnd.ms-project",
-            Metadata={
-                "original-filename": file.filename,
-                "masterplan-id": str(masterplan_id),
-                "import-log-id": str(import_log_id),
-                "file-hash": file_hash,
-                "uploaded-at": datetime.utcnow().isoformat(),
-            },
+            Metadata=_sanitize_metadata(metadata),
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao salvar no S3: {e}")

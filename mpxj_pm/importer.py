@@ -264,6 +264,7 @@ class MPPImporter:
         source_file: Optional[str] = None,
         file_storage_path: Optional[str] = None,
         file_hash: Optional[str] = None,
+        masterplan_external_id: Optional[str] = None,
     ) -> ImportReport:
         """Importa um arquivo .mpp para o banco de dados.
         
@@ -272,6 +273,8 @@ class MPPImporter:
             source_file: Nome do arquivo original (para log)
             file_storage_path: Caminho onde o arquivo foi armazenado (ex: S3)
             file_hash: Hash SHA256 do arquivo (para detectar duplicatas)
+            masterplan_external_id: UUID do masterplan para atualização (opcional).
+                Se fornecido, será usado ao invés do external_id do arquivo ou gerado.
         
         Returns:
             ImportReport com todos os detalhes da importação
@@ -297,10 +300,16 @@ class MPPImporter:
                 info = reader.get_project_info()
 
             masterplan_name = info.get("name") or os.path.basename(mpp_path)
-            masterplan_external_id = info.get("id")
             
-            if not masterplan_external_id:
-                masterplan_external_id = str(uuid.uuid4())
+            # Se masterplan_external_id foi fornecido, usa ele (para atualização)
+            # Caso contrário, tenta pegar do arquivo ou gera um novo
+            if masterplan_external_id:
+                # Usa o UUID fornecido (para atualização de masterplan existente)
+                pass
+            else:
+                masterplan_external_id = info.get("id")
+                if not masterplan_external_id:
+                    masterplan_external_id = str(uuid.uuid4())
             
             # Preenche dados do projeto no relatório
             report.masterplan_name = masterplan_name
@@ -1029,6 +1038,37 @@ class MPPImporter:
             if external_id:
                 external_to_db_id[external_id] = resource_id
 
+        # Marca como deletados os resources que não estão mais no arquivo
+        if valid_external_ids:
+            cur.execute(
+                """
+                UPDATE pm.resource
+                SET deleted_at = CURRENT_TIMESTAMP,
+                    deleted_by = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE masterplan_id = %s
+                    AND deleted_at IS NULL
+                    AND external_id IS NOT NULL
+                    AND external_id != ALL(%s)
+                """,
+                (self.created_by, masterplan_id, valid_external_ids),
+            )
+            deleted_count = cur.rowcount
+            if deleted_count > 0:
+                # Restaura resources que foram deletados mas voltaram no arquivo
+                cur.execute(
+                    """
+                    UPDATE pm.resource
+                    SET deleted_at = NULL,
+                        deleted_by = NULL,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE masterplan_id = %s
+                        AND deleted_at IS NOT NULL
+                        AND external_id = ANY(%s)
+                    """,
+                    (masterplan_id, valid_external_ids),
+                )
+
         return len(external_to_db_id), external_to_db_id
 
     def _import_tasks(
@@ -1131,6 +1171,37 @@ class MPPImporter:
             if external_id:
                 external_to_db_id[external_id] = task_id
 
+        # Marca como deletadas as tasks que não estão mais no arquivo
+        if valid_external_ids:
+            cur.execute(
+                """
+                UPDATE pm.task
+                SET deleted_at = CURRENT_TIMESTAMP,
+                    deleted_by = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE masterplan_id = %s
+                    AND deleted_at IS NULL
+                    AND external_id IS NOT NULL
+                    AND external_id != ALL(%s)
+                """,
+                (self.created_by, masterplan_id, valid_external_ids),
+            )
+            deleted_count = cur.rowcount
+            if deleted_count > 0:
+                # Restaura tasks que foram deletadas mas voltaram no arquivo
+                cur.execute(
+                    """
+                    UPDATE pm.task
+                    SET deleted_at = NULL,
+                        deleted_by = NULL,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE masterplan_id = %s
+                        AND deleted_at IS NOT NULL
+                        AND external_id = ANY(%s)
+                    """,
+                    (masterplan_id, valid_external_ids),
+                )
+
         return len(external_to_db_id), external_to_db_id
 
     def _import_assignments(
@@ -1158,6 +1229,7 @@ class MPPImporter:
 
         # Prepara todas as linhas em memória
         rows: List[Tuple[Any, ...]] = []
+        valid_external_ids: List[str] = []
         
         for assignment in assignments:
             external_id = assignment.get("external_id")
@@ -1184,8 +1256,21 @@ class MPPImporter:
                 json.dumps(assignment.get("custom_fields", {})),
                 self.created_by,
             ))
+            valid_external_ids.append(external_id)
         
         if not rows:
+            # Se não há assignments no arquivo, marca todos como deletados
+            cur.execute(
+                """
+                UPDATE pm.assignment
+                SET deleted_at = CURRENT_TIMESTAMP,
+                    deleted_by = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE masterplan_id = %s
+                    AND deleted_at IS NULL
+                """,
+                (self.created_by, masterplan_id),
+            )
             return 0
         
         # Bulk insert com executemany
@@ -1218,6 +1303,35 @@ class MPPImporter:
                 """,
                 chunk,
             )
+        
+        # Marca como deletados os assignments que não estão mais no arquivo
+        if valid_external_ids:
+            cur.execute(
+                """
+                UPDATE pm.assignment
+                SET deleted_at = CURRENT_TIMESTAMP,
+                    deleted_by = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE masterplan_id = %s
+                    AND deleted_at IS NULL
+                    AND external_id IS NOT NULL
+                    AND external_id != ALL(%s)
+                """,
+                (self.created_by, masterplan_id, valid_external_ids),
+            )
+            # Restaura assignments que foram deletados mas voltaram no arquivo
+            cur.execute(
+                """
+                UPDATE pm.assignment
+                SET deleted_at = NULL,
+                    deleted_by = NULL,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE masterplan_id = %s
+                    AND deleted_at IS NOT NULL
+                    AND external_id = ANY(%s)
+                """,
+                (masterplan_id, valid_external_ids),
+            )
 
         return len(rows)
 
@@ -1244,6 +1358,7 @@ class MPPImporter:
 
         # Prepara todas as linhas em memória
         rows: List[Tuple[Any, ...]] = []
+        dependency_pairs: List[Tuple[int, int]] = []  # Lista de (predecessor_id, successor_id)
         
         for dep in dependencies:
             predecessor_external_id = dep.get("predecessor_external_id")
@@ -1267,8 +1382,21 @@ class MPPImporter:
                 dep.get("lag"),
                 self.created_by,
             ))
+            dependency_pairs.append((predecessor_task_id, successor_task_id))
         
         if not rows:
+            # Se não há dependencies no arquivo, marca todas como deletadas
+            cur.execute(
+                """
+                UPDATE pm.task_dependency
+                SET deleted_at = CURRENT_TIMESTAMP,
+                    deleted_by = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE masterplan_id = %s
+                    AND deleted_at IS NULL
+                """,
+                (self.created_by, masterplan_id),
+            )
             return 0
         
         # Bulk insert com executemany
@@ -1292,6 +1420,36 @@ class MPPImporter:
                     updated_at = CURRENT_TIMESTAMP
                 """,
                 chunk,
+            )
+        
+        # Marca como deletadas as dependencies que não estão mais no arquivo
+        if dependency_pairs:
+            # Constrói uma lista de condições para comparar os pares
+            # Usa uma abordagem mais simples: marca todas e depois restaura as que estão na lista
+            cur.execute(
+                """
+                UPDATE pm.task_dependency
+                SET deleted_at = CURRENT_TIMESTAMP,
+                    deleted_by = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE masterplan_id = %s
+                    AND deleted_at IS NULL
+                    AND (predecessor_task_id, successor_task_id) != ALL(%s)
+                """,
+                (self.created_by, masterplan_id, dependency_pairs),
+            )
+            # Restaura dependencies que foram deletadas mas voltaram no arquivo
+            cur.execute(
+                """
+                UPDATE pm.task_dependency
+                SET deleted_at = NULL,
+                    deleted_by = NULL,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE masterplan_id = %s
+                    AND deleted_at IS NOT NULL
+                    AND (predecessor_task_id, successor_task_id) = ANY(%s)
+                """,
+                (masterplan_id, dependency_pairs),
             )
 
         return len(rows)

@@ -74,16 +74,19 @@ uvicorn api:app --host 0.0.0.0 --port 8000
 
 A API requer autenticação via **Bearer token JWT** (algoritmo HS256) em todos os endpoints (exceto health checks).
 
-O token JWT deve conter o `user_id` no campo `sub`:
+O token JWT deve conter o `id` do usuário:
 
 ```json
 {
-  "sub": 123,
-  "exp": 1735689600
+  "id": 3,
+  "name": "João",
+  "email": "joao@constructin.com.br",
+  "iat": 1769777373,
+  "exp": 1769780973
 }
 ```
 
-O `user_id` extraído do campo `sub` é usado como `created_by` e `updated_by` nas operações.
+O `id` extraído do token é usado como `created_by` e `updated_by` nas operações.
 
 ### Endpoints
 

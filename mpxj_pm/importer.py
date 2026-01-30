@@ -1424,8 +1424,10 @@ class MPPImporter:
         
         # Marca como deletadas as dependencies que não estão mais no arquivo
         if dependency_pairs:
-            # Constrói uma lista de condições para comparar os pares
-            # Usa uma abordagem mais simples: marca todas e depois restaura as que estão na lista
+            # Abordagem: marca todas como deletadas primeiro, depois restaura apenas as que estão na lista
+            # Isso evita problemas com tipos compostos no psycopg
+            
+            # Primeiro, marca todas as dependencies do masterplan como deletadas
             cur.execute(
                 """
                 UPDATE pm.task_dependency
@@ -1434,23 +1436,29 @@ class MPPImporter:
                     updated_at = CURRENT_TIMESTAMP
                 WHERE masterplan_id = %s
                     AND deleted_at IS NULL
-                    AND (predecessor_task_id, successor_task_id) != ALL(%s)
                 """,
-                (self.created_by, masterplan_id, dependency_pairs),
+                (self.created_by, masterplan_id),
             )
-            # Restaura dependencies que foram deletadas mas voltaram no arquivo
-            cur.execute(
-                """
-                UPDATE pm.task_dependency
-                SET deleted_at = NULL,
-                    deleted_by = NULL,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE masterplan_id = %s
-                    AND deleted_at IS NOT NULL
-                    AND (predecessor_task_id, successor_task_id) = ANY(%s)
-                """,
-                (masterplan_id, dependency_pairs),
-            )
+            
+            # Depois, restaura apenas as que estão na lista de dependency_pairs
+            # Usa executemany para atualizar cada par individualmente
+            restore_rows = [(masterplan_id, pred_id, succ_id) for pred_id, succ_id in dependency_pairs]
+            if restore_rows:
+                chunk_size = 1000
+                for i in range(0, len(restore_rows), chunk_size):
+                    chunk = restore_rows[i:i + chunk_size]
+                    cur.executemany(
+                        """
+                        UPDATE pm.task_dependency
+                        SET deleted_at = NULL,
+                            deleted_by = NULL,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE masterplan_id = %s
+                            AND predecessor_task_id = %s
+                            AND successor_task_id = %s
+                        """,
+                        chunk,
+                    )
 
         return len(rows)
 

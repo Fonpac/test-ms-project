@@ -42,6 +42,7 @@ pip install -r requirements.txt
 |----------|---------|-----------|
 | `API_HOST` | `0.0.0.0` | Host da API |
 | `API_PORT` | `8000` | Porta da API |
+| `POSTGRES_TLS_CERT` | - | Caminho para certificado TLS/SSL do PostgreSQL (ex: `./global-bundle.pem`) |
 
 ### Importar um arquivo local (teste)
 

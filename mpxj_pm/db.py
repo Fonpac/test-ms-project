@@ -39,6 +39,7 @@ class DBConfig:
 
     Fonte padrão:
     - PGHOST, PGPORT, PGDATABASE, PGUSER, PGPASSWORD
+    - POSTGRES_TLS_CERT (opcional): caminho para certificado TLS/SSL
 
     Você também pode sobrescrever via atributos do DBConfig.
     """
@@ -48,6 +49,7 @@ class DBConfig:
     database: Optional[str] = None
     user: Optional[str] = None
     password: Optional[str] = None
+    ssl_cert: Optional[str] = None
 
     def to_dsn(self) -> str:
         host = self.host or os.getenv("PGHOST") or "localhost"
@@ -55,6 +57,7 @@ class DBConfig:
         dbname = self.database or os.getenv("PGDATABASE")
         user = self.user or os.getenv("PGUSER")
         password = self.password or os.getenv("PGPASSWORD")
+        ssl_cert = self.ssl_cert or os.getenv("POSTGRES_TLS_CERT")
 
         missing = [k for k, v in {"PGDATABASE": dbname, "PGUSER": user}.items() if not v]
         if missing:
@@ -65,4 +68,10 @@ class DBConfig:
         parts = [f"host={host}", f"port={port}", f"dbname={dbname}", f"user={user}"]
         if password:
             parts.append(f"password={password}")
+        
+        # Configuração SSL/TLS se certificado fornecido
+        if ssl_cert:
+            parts.append("sslmode=require")
+            parts.append(f"sslrootcert={ssl_cert}")
+        
         return " ".join(parts)
